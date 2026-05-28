@@ -3,6 +3,9 @@
 
 - SQLite FTS5 (BM25) keyword ranking + nomic-embed-text (Ollama) vector cosine,
   fused with Reciprocal Rank Fusion (RRF, k=60).
+- Chunked embeddings: long bodies are split into ~1500-char paragraph-aware chunks,
+  each embedded; query similarity is the MAX over a doc's chunks (so content deep in
+  a long node is reachable — a single whole-doc vector would dilute it).
 - Decay-aware: results get a mild recency boost from frontmatter `updated`.
 - Soft-delete: nodes with `status: archived` are excluded from the index.
 - Incremental: only re-embeds files whose content hash changed.
@@ -20,6 +23,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 EMBED_MODEL = os.environ.get("VAULT_EMBED_MODEL", "nomic-embed-text")
 RRF_K = 60
 DECAY_HALFLIFE_DAYS = 120.0   # mild recency prior
+CHUNK_CHARS = 1500            # embedding chunk size (well under nomic's ~2048-token window)
 SKIP_DIRS = {".index", ".obsidian", ".git", ".claude", "_templates"}
 
 try:
@@ -119,6 +123,8 @@ def connect():
         path TEXT PRIMARY KEY, title TEXT, subgraph TEXT, body TEXT,
         updated TEXT, hash TEXT, emb BLOB)""")
     con.execute("CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(path, title, body, subgraph)")
+    con.execute("""CREATE TABLE IF NOT EXISTS chunks(
+        path TEXT, idx INTEGER, emb BLOB, PRIMARY KEY(path, idx))""")
     return con
 
 
@@ -135,10 +141,36 @@ def embed(text):
         return None
 
 
+def split_chunks(title, body):
+    """Paragraph-aware packing of body into ~CHUNK_CHARS windows; the title leads every
+    chunk for topical grounding. Oversized paragraphs are hard-split. Always >=1 chunk."""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", (body or "").strip()) if p.strip()]
+    units = []
+    for p in paras:
+        while len(p) > CHUNK_CHARS:
+            units.append(p[:CHUNK_CHARS]); p = p[CHUNK_CHARS:]
+        if p:
+            units.append(p)
+    chunks, cur = [], ""
+    for u in units:
+        if cur and len(cur) + len(u) + 2 > CHUNK_CHARS:
+            chunks.append(cur); cur = u
+        else:
+            cur = (cur + "\n\n" + u) if cur else u
+    if cur:
+        chunks.append(cur)
+    if not chunks:
+        chunks = [""]
+    return [(f"{title}\n{c}").strip() for c in chunks]
+
+
 def reindex(con, force=False, embed_enabled=True):
     cur = con.cursor()
-    existing = {row[0]: (row[1], bool(row[2]))
-                for row in cur.execute("SELECT path, hash, emb IS NOT NULL FROM docs")}
+    existing = {row[0]: [row[1], False] for row in cur.execute("SELECT path, hash FROM docs")}
+    # "has embeddings" = has >=1 chunk row (so an outage-indexed doc re-embeds next run).
+    for (path,) in cur.execute("SELECT DISTINCT path FROM chunks"):
+        if path in existing:
+            existing[path][1] = True
     seen, changed = set(), 0
     for full, rel in iter_nodes():
         try:
@@ -151,31 +183,33 @@ def reindex(con, force=False, embed_enabled=True):
         seen.add(rel)
         h = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()
         prev = existing.get(rel)
-        # Skip only if unchanged AND (embeddings off this run, or it already has one).
-        # Otherwise a row indexed during an Ollama outage keeps a NULL emb forever.
+        # Skip only if unchanged AND (embeddings off this run, or it already has chunks).
         if not force and prev and prev[0] == h and (not embed_enabled or prev[1]):
             continue
         changed += 1
-        title = None
         mt = re.search(r"^#\s+(.+)$", body, re.M)
         title = mt.group(1).strip() if mt else os.path.basename(rel)[:-3]
         sg = subgraph_of(rel)
         updated = str(meta.get("updated") or meta.get("created") or "")
-        emb_blob = None
-        if embed_enabled:
-            vec = embed(title + "\n" + body)
-            if vec:
-                emb_blob = struct.pack("<%df" % len(vec), *vec)
         cur.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?,?,?,?,?)",
-                    (rel, title, sg, body, updated, h, emb_blob))
+                    (rel, title, sg, body, updated, h, None))
         cur.execute("DELETE FROM fts WHERE path=?", (rel,))
         cur.execute("INSERT INTO fts(path,title,body,subgraph) VALUES(?,?,?,?)",
                     (rel, title, body, sg))
+        # Chunked embeddings: replace this doc's chunk vectors.
+        cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
+        if embed_enabled:
+            for i, ch in enumerate(split_chunks(title, body)):
+                vec = embed(ch)
+                if vec:
+                    cur.execute("INSERT INTO chunks(path, idx, emb) VALUES(?,?,?)",
+                                (rel, i, struct.pack("<%df" % len(vec), *vec)))
     # prune deleted / newly-archived
     for rel in list(existing):
         if rel not in seen:
             cur.execute("DELETE FROM docs WHERE path=?", (rel,))
             cur.execute("DELETE FROM fts WHERE path=?", (rel,))
+            cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
     con.commit()
     return changed
 
@@ -214,23 +248,25 @@ def search(con, query, k=8, subgraphs=None):
             rank += 1
             if rank >= 60:
                 break
-    # vector ranks via cosine over stored embeddings — scope-filtered before the cap.
+    # vector ranks via cosine over CHUNK embeddings, max-pooled per doc — scope-filtered
+    # before the cap so a long node ranks by its single best-matching chunk.
     vec = {}
     qv = embed(query)
     vector_used = bool(qv) and np is not None   # numpy gates the only consumer of qv
     if vector_used:
         qa = np.array(qv, dtype="float32")
         qa /= (np.linalg.norm(qa) + 1e-9)
-        cand = []
-        for path, blob in cur.execute("SELECT path, emb FROM docs WHERE emb IS NOT NULL"):
+        best = {}
+        for path, blob in cur.execute("SELECT path, emb FROM chunks"):
             if not in_scope(path):
                 continue
             arr = np.frombuffer(blob, dtype="float32")
             if arr.shape[0] != qa.shape[0]:
                 continue
-            cand.append((path, float(np.dot(arr, qa) / (np.linalg.norm(arr) + 1e-9))))
-        cand.sort(key=lambda x: -x[1])
-        for rank, (path, _s) in enumerate(cand[:60]):
+            s = float(np.dot(arr, qa) / (np.linalg.norm(arr) + 1e-9))
+            if path not in best or s > best[path]:
+                best[path] = s
+        for rank, (path, _s) in enumerate(sorted(best.items(), key=lambda x: -x[1])[:60]):
             vec[path] = rank
     # Reciprocal Rank Fusion + decay (candidates are already scope-filtered)
     meta = {row[0]: row[1] for row in cur.execute("SELECT path, updated FROM docs")}

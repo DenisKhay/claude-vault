@@ -69,17 +69,21 @@ Three modes the hooks/commands invoke:
 
 **Indexing** (`vault_search.py reindex`): walks the vault (skipping `.git`, `.index`,
 `.obsidian`, `.claude`, `_templates`, and dotfiles), and for each non-archived node stores
-body + metadata + a content hash + an embedding blob in SQLite. It is **hash-incremental**:
-unchanged files are skipped, deleted/newly-archived files are pruned. A file indexed while
-the embedder was down (NULL embedding) is **re-embedded on the next run** once the embedder
-returns — the skip check requires both an unchanged hash *and* a present embedding.
+body + metadata + a content hash in `docs`, and **per-chunk embeddings** in `chunks` — the
+body is split into ~1500-char paragraph-aware chunks (title-prefixed for grounding) and each
+chunk is embedded, so content deep in a long node stays reachable instead of being clipped by
+a single whole-doc vector. It is **hash-incremental**: unchanged files are skipped,
+deleted/newly-archived files have their docs+chunks pruned. A file indexed while the embedder
+was down (no chunks) is **re-embedded on the next run** once it returns — the skip check
+requires both an unchanged hash *and* existing chunk rows.
 
 **Retrieval** (`vault_search.py search`):
 1. **Keyword** — SQLite FTS5 `bm25()`, query tokenized Unicode-aware (`\w+`) so non-ASCII
    (e.g. Cyrillic) terms hit the `unicode61`-tokenized index. Each token is quoted, so FTS5
    operators in user input are inert (injection-safe).
-2. **Vector** — cosine over stored `nomic-embed-text` embeddings (when numpy + Ollama are
-   available), with a per-doc dimension guard against stale blobs.
+2. **Vector** — cosine over `nomic-embed-text` chunk embeddings, **max-pooled per doc** (a
+   node ranks by its single best-matching chunk), when numpy + Ollama are available, with a
+   dimension guard against stale blobs.
 3. **Fusion** — Reciprocal Rank Fusion (`1/(60+rank)`) over the two rank lists, times a mild
    recency factor (`0.6 + 0.4·decay`, 120-day half-life) that nudges ties but can never
    overturn a strong dual-modality match.
