@@ -1,0 +1,14 @@
+{
+  "name": "claude-vault",
+  "owner": {
+    "name": "Denis Khaydarshin",
+    "url": "https://github.com/DenisKhay"
+  },
+  "plugins": [
+    {
+      "name": "vault",
+      "source": "./",
+      "description": "Persistent, identity-routed knowledge graph with hybrid (keyword + semantic) search and hook-enforced capture."
+    }
+  ]
+}

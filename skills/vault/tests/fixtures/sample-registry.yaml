@@ -1,0 +1,23 @@
+# Sample registry used by tests. Mirrors the schema described in the spec.
+subgraphs:
+  - id: portals
+    path: acme/portals
+    entry: acme/portals/_index.md
+    match:
+      git_remote: git@gitlab.example.com:acme/portals.git
+      repo_name: portals
+      path_prefix: /home/user/projects/portals
+
+  - id: patient-mobile
+    path: acme/patient-mobile
+    entry: acme/patient-mobile/_index.md
+    match:
+      repo_name: patient-mobile-application
+      path_prefix: /home/user/projects/patient-mobile-application
+
+  - id: parallel-workflow
+    path: parallel-workflow
+    entry: parallel-workflow/_index.md
+    match:
+      repo_name: parallel-workflow
+      path_prefix: /home/user/projects/parallel-workflow

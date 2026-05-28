@@ -1,0 +1,34 @@
+# Vault registry — copy to ~/Vaults/_registry.yaml and edit for your repos.
+#
+# Each session, match.sh resolves the current repo to subgraph id(s) by identity:
+#   git_remote  — `git remote get-url origin`
+#   repo_name   — basename of the git toplevel (or cwd)
+#   path_prefix — absolute path the cwd lives under
+# ANY of these may match, and ALL matching subgraphs load (e.g. a repo that holds
+# both a frontend and its backend can map to two subgraphs).
+#
+# Namespaces (2-level roots like `acme/web-app`) are AUTO-DERIVED — no hardcoded
+# list. A subgraph is in a namespace if its `path` has a parent dir, or it sets
+# `namespace:`. An `always_in_namespace` subgraph loads alongside any sibling that
+# matched in that namespace (handy for a shared/ cross-project knowledge area).
+
+subgraphs:
+  - id: web-app
+    path: acme/web-app
+    entry: acme/web-app/_index.md
+    match:
+      git_remote: git@github.com:acme/web-app.git
+      repo_name: web-app
+      path_prefix: /home/you/projects/web-app
+
+  - id: my-cli
+    path: my-cli                  # top-level subgraph (no namespace)
+    entry: my-cli/_index.md
+    match:
+      repo_name: my-cli
+      path_prefix: /home/you/projects/my-cli
+
+  - id: shared
+    path: acme/shared             # auto-loads with any acme/* subgraph that matched
+    entry: acme/shared/_index.md
+    always_in_namespace: acme

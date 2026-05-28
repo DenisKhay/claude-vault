@@ -1,0 +1,13 @@
+{
+  "name": "vault",
+  "version": "1.0.0",
+  "description": "A single global knowledge graph for Claude Code: identity-routed subgraphs, hybrid BM25 + embedding search (MCP), and hook-enforced capture so durable project knowledge survives across sessions.",
+  "author": {
+    "name": "Denis Khaydarshin",
+    "url": "https://github.com/DenisKhay"
+  },
+  "homepage": "https://github.com/DenisKhay/claude-vault",
+  "repository": "https://github.com/DenisKhay/claude-vault",
+  "license": "MIT",
+  "keywords": ["knowledge-management", "memory", "rag", "embeddings", "hooks", "mcp", "skill", "obsidian"]
+}

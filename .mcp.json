@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "vault-search": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/skills/vault/retrieval/vault_mcp.py"],
+      "env": {}
+    }
+  }
+}
