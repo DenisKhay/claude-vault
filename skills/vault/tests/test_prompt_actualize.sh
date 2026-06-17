@@ -19,11 +19,13 @@ out=$(echo "$input" | "$script_dir/prompt-actualize.sh" 2>&1)
 ec=$?
 assert_exit "0" "$ec" "prompt Stop second: exit 0"
 
-# Case 3: PreCompact → exit 2 + reason
-input=$(jq -nc '{session_id:"s3", cwd:"/x", hook_event_name:"PreCompact", trigger:"auto"}')
+# Case 3: PreCompact, no sentinel → exit 0 (never blocks; next Stop captures)
+sid="s3"
+rm -rf "/tmp/vault-${sid}"
+input=$(jq -nc --arg sid "$sid" '{session_id:$sid, cwd:"/x", hook_event_name:"PreCompact", trigger:"auto"}')
 out=$(echo "$input" | "$script_dir/prompt-actualize.sh" 2>&1) && ec=$? || ec=$?
-assert_exit "2" "$ec" "prompt PreCompact: exit 2"
-assert_contains "actualize" "$out" "prompt PreCompact: reason mentions actualize"
+assert_exit "0" "$ec" "prompt PreCompact no-sentinel: exit 0 (never blocks)"
+rm -rf "/tmp/vault-${sid}"
 
 # Case 4: Paused session → exit 0 silently for either event
 sid="paused-actualize"
@@ -64,15 +66,15 @@ ec=$?
 assert_exit "0" "$ec" "prompt Stop stale-sentinel: exit 0 (first-actualize-only)"
 rm -rf "/tmp/vault-${sid}"
 
-# Case 9: PreCompact with stale sentinel → exit 2 (freshness-based, still blocks)
+# Case 9: PreCompact with stale sentinel → exit 0, invalidates sentinel (next Stop re-captures)
 sid="stale-precompact"
 rm -rf "/tmp/vault-${sid}"
 mkdir -p "/tmp/vault-${sid}"
 touch -d "10 minutes ago" "/tmp/vault-${sid}/last-actualize"
 input=$(jq -nc --arg sid "$sid" '{session_id:$sid, cwd:"/x", hook_event_name:"PreCompact", trigger:"auto"}')
 out=$(echo "$input" | VAULT_ACTUALIZE_FRESHNESS_SECONDS=300 "$script_dir/prompt-actualize.sh" 2>&1) && ec=$? || ec=$?
-assert_exit "2" "$ec" "prompt PreCompact stale-sentinel: exit 2"
-assert_contains "actualize" "$out" "prompt PreCompact stale-sentinel: reason"
+assert_exit "0" "$ec" "prompt PreCompact stale-sentinel: exit 0 (never blocks)"
+assert_eq "false" "$([[ -f "/tmp/vault-${sid}/last-actualize" ]] && echo true || echo false)" "prompt PreCompact stale-sentinel: invalidates sentinel"
 rm -rf "/tmp/vault-${sid}"
 
 # Case 8: PreCompact with fresh sentinel → exit 0

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # prompt-actualize.sh — Stop + PreCompact hook target.
 # Stop: blocks ONCE per session (first-actualize-only). After any actualize, all future Stops pass.
-# PreCompact: freshness-based (may compact multiple times; re-actualize if stale).
+# PreCompact: NEVER blocks. If the vault is stale, it invalidates the actualize
+#   sentinel so the next Stop re-captures. Blocking compaction wedges sessions
+#   (a manual /compact dead-ends; auto-compact can't be user-retried), and the
+#   Stop path self-resolves cleanly while staying wedge-safe via stop_hook_active.
 # Pause: silent allow.
 # Error: silent allow (never break the user).
 
@@ -32,29 +35,19 @@ case "$HOOK_EVENT" in
     exit 2
     ;;
   PreCompact)
-    # Freshness-based: may compact multiple times per session.
-    blocks_file="/tmp/vault-${HOOK_SESSION_ID}/precompact-blocks"
+    # Never block — let compaction always proceed. If the vault is stale,
+    # invalidate the sentinel so the next Stop forces a fresh capture
+    # (post-compaction). The Stop path feeds back to the model and self-resolves.
     if [[ -f "$actualize_file" ]]; then
       freshness="${VAULT_ACTUALIZE_FRESHNESS_SECONDS:-1800}"
       age=$(( $(date +%s) - $(stat -c %Y "$actualize_file" 2>/dev/null || echo 0) ))
       if (( age < freshness )); then
-        rm -f "$blocks_file" 2>/dev/null
         exit 0
       fi
+      rm -f "$actualize_file" 2>/dev/null
+      echo "Vault sync (pre-compact): vault stale — invalidated so the next stop re-captures. Compacting." >&2
     fi
-    # Wedged-session escape: a session whose API requests fail (e.g. an
-    # oversized image in context) cannot run actualize, and /compact is its
-    # only recovery — blocking it twice in a row is a deadlock. Block once,
-    # then fail open on the next stale compact attempt.
-    n=$(cat "$blocks_file" 2>/dev/null || echo 0)
-    if (( n >= 1 )); then
-      rm -f "$blocks_file" 2>/dev/null
-      echo "Vault sync (pre-compact): actualize is stale but compaction was already blocked once — failing open so a wedged session can recover. Actualize after compaction." >&2
-      exit 0
-    fi
-    echo $(( n + 1 )) > "$blocks_file" 2>/dev/null || true
-    echo "Vault sync (pre-compact): invoke the vault skill in actualize mode. After actualize, run: touch $actualize_file" >&2
-    exit 2
+    exit 0
     ;;
   *)
     exit 0
