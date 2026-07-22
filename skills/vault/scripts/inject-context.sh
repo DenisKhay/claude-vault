@@ -16,12 +16,23 @@ if is_paused "$HOOK_SESSION_ID"; then
   exit 0
 fi
 
+# Emit the context block INVISIBLY: JSON additionalContext + suppressOutput — the model gets the
+# block, the UI renders nothing (the old plain-stdout form printed a wall at every session start).
+# Without jq, fall back to plain stdout (visible, but never silently dropped).
+emit_context() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -nc --arg c "$1" '{suppressOutput: true, hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $c}}'
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 vroot=$(vault_root)
 mapfile -t match_ids < <("$self_dir/match.sh" "$HOOK_CWD" 2>/dev/null)
 first="${match_ids[0]:-MISS}"
 
 if [[ "$first" == "MISS" || -z "$first" ]]; then
-  cat <<EOF
+  emit_context "$(cat <<EOF
 ## Vault context
 
 NO SUBGRAPH MATCHED.
@@ -32,6 +43,7 @@ If knowledge work happens this session, you MUST invoke the vault skill in 'enro
 
 Cross-cutting facts may still exist: you can search the whole vault with the \`vault_search\` MCP tool (semantic + keyword) even with no subgraph matched.
 EOF
+)"
   exit 0
 fi
 
@@ -69,7 +81,7 @@ PY
   printf '\n'
 }
 
-{
+ctx=$(
   printf '## Vault context\n\n'
   if (( ${#match_ids[@]} > 1 )); then
     printf 'Matched subgraphs: %s\n\n' "${match_ids[*]}"
@@ -84,4 +96,5 @@ Retrieval: read individual entry nodes lazily as the task touches them, OR use t
 
 Vault skill is loaded. Actualize fires on Stop and PreCompact (and advises mid-session). Capture only durable, non-obvious knowledge — skip anything re-derivable from a single source file.
 EOF
-}
+)
+emit_context "$ctx"

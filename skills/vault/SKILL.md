@@ -21,6 +21,8 @@ Behavior:
 
 Triggered by Stop hook, PreCompact hook, the PostToolUse counter, or `/vault-update`. Sweeps everything Claude has learned this session into the matched subgraph as new or updated nodes.
 
+**Two-phase, so the main transcript stays clean:** the MAIN agent only decides *what* is worth capturing (steps 1–4 — it's the only one holding the session context) and composes a candidate brief; ALL vault file I/O (dedup search, node reads/writes, index updates) runs inside ONE dispatched subagent (step 5), which renders as a single collapsed row. Never do vault file I/O inline in the main conversation — that litter is exactly what this structure removes.
+
 ### Algorithm
 
 1. **Re-match identity**: `cwd` may have changed mid-session. Run this skill's `scripts/match.sh "$PWD"` and use the result. If MISS, switch to enroll mode and ask the user where this work belongs.
@@ -42,34 +44,17 @@ Triggered by Stop hook, PreCompact hook, the PostToolUse counter, or `/vault-upd
 
 4. **Cross-subgraph rule**: if a candidate node would apply to >=2 sibling subgraphs in the same namespace (e.g. several `<namespace>/*` subgraphs), write it to `<namespace>/shared/` instead.
 
-5. **For each surviving candidate — dedup BEFORE writing**: query the `vault_search` MCP tool (and/or grep) for an existing node on the same topic, *across all subgraphs* (a near-duplicate may live in `shared/` or a sibling). 
-   - If a node on the same topic exists → **UPDATE/MERGE into it** (fold in the new fact, refresh `updated:`, don't create a sibling). Never produce a second `insurance.md` / `scrollbar.md` for a concept that already has one.
-   - If genuinely new → create from the appropriate template in `~/Vaults/_templates/`.
-   - Provisional/uncertain facts: mark them in-body as provisional rather than minting a confident node; promote on confirmation.
+5. **Dispatch ONE capture subagent** (synchronous `general-purpose` Task — wait for it; do NOT do this work inline). Its prompt must carry everything, since it has none of the session's context:
+   - the target subgraph id + root path (and `shared/` path when step 4 applies);
+   - **the full candidate brief** — per candidate: intended folder, proposed kebab-case filename, and the complete fact content (the why/gotcha/scar, 2–8 lines, links, ticket ids). Write facts out in full — the subagent cannot ask follow-ups;
+   - its working rules, verbatim:
+     a. **Dedup BEFORE writing**: query the `vault_search` MCP tool (and/or grep) for an existing node on the same topic, *across all subgraphs* (a near-duplicate may live in `shared/` or a sibling). If one exists → **UPDATE/MERGE into it** (fold in the new fact, refresh `updated:`, don't create a sibling). If genuinely new → create from the matching template in `~/Vaults/_templates/`. Provisional facts: mark provisional in-body, don't mint confident nodes.
+     b. **Linking**: every new node MUST contain at least one `[[wiki-link]]` to an existing node in the same subgraph. No orphans. If entry-node-worthy, also add it to the subgraph's `_index.md` "Entry nodes" list.
+     c. **Frontmatter**: every node carries `type/project/created/updated/tags` frontmatter (templates have the type-specific extras: bug `ticket`, component `path`, api `method`+`path`, dependency `version`).
+     d. **Naming**: kebab-case filenames, short and greppable. No prefixes, no numbering. Folder provides context.
+     e. **Return value**: a machine-countable last line — `updated: <paths> | created: <paths>` (empty lists allowed).
 
-6. **Linking**: every new node MUST contain at least one `[[wiki-link]]` to an existing node in the same subgraph. No orphans. If the new node is high-traffic enough to be an entry node, also add it to the subgraph's `_index.md` "Entry nodes" list.
-
-7. **Frontmatter**: every node has frontmatter:
-   ```yaml
-   ---
-   type: <bug|component|api|architecture|pattern|domain|dependency>
-   project: <subgraph-id>
-   created: <YYYY-MM-DD>
-   updated: <YYYY-MM-DD>
-   tags: []
-   ---
-   ```
-   Type-specific fields (already in templates):
-   - bug: `ticket: <ID>`
-   - component: `path: <file-path>`
-   - api: `method: GET|POST|...`, `path: /api/...`
-   - dependency: `version: <semver>`
-
-8. **Naming**: kebab-case filenames, short and greppable. No prefixes, no numbering. Folder provides context.
-
-9. **Write the actualize timestamp**. The hook message includes the exact `touch` command to run. Copy it from the hook's stderr output (e.g. `touch /tmp/vault-<session-id>/last-actualize`) and execute it. This tells the Stop hook "at least one actualize happened" so it won't block again this session.
-
-10. **Report** to the user: list the created and updated node paths so they can review.
+6. **On the subagent's return** (main agent): write the actualize timestamp — the hook message includes the exact `touch` command; run it. Then report to the user as ONE dim line — `vault: N updated, M new` — nothing more. Node paths live in the subagent's collapsed transcript for whoever wants the detail; never list them in chat.
 
 ### Empty-delta short-circuit
 If after scanning you have no candidates (e.g. trivial typo session), still touch the timestamp file and print "no knowledge delta — nothing to capture this turn" so the Stop hook lets the session exit cleanly. Do not create empty nodes.
