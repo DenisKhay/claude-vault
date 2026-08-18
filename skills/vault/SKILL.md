@@ -44,7 +44,7 @@ Triggered by Stop hook, PreCompact hook, the PostToolUse counter, or `/vault-upd
 
 4. **Cross-subgraph rule**: if a candidate node would apply to >=2 sibling subgraphs in the same namespace (e.g. several `<namespace>/*` subgraphs), write it to `<namespace>/shared/` instead.
 
-5. **Dispatch ONE capture subagent** (synchronous `general-purpose` Task — wait for it; do NOT do this work inline). Its prompt must carry everything, since it has none of the session's context:
+5. **Dispatch ONE capture subagent** (synchronous `general-purpose` Task with **`model: sonnet`** — the main agent already decided WHAT is worth capturing; the capture agent does mechanical dedup + file I/O and does not need the session's model tier. Wait for it; do NOT do this work inline). Its prompt must carry everything, since it has none of the session's context:
    - the target subgraph id + root path (and `shared/` path when step 4 applies);
    - **the full candidate brief** — per candidate: intended folder, proposed kebab-case filename, and the complete fact content (the why/gotcha/scar, 2–8 lines, links, ticket ids). Write facts out in full — the subagent cannot ask follow-ups;
    - its working rules, verbatim:

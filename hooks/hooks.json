@@ -1,5 +1,5 @@
 {
-  "description": "Vault capture/recall lifecycle: inject the matched subgraph on SessionStart, a non-blocking nudge after N edits, and a capture sweep on Stop/PreCompact.",
+  "description": "Vault capture/recall lifecycle: inject the matched subgraph on SessionStart and run a capture sweep on Stop/PreCompact. (The mid-session PostToolUse nudge was removed 2026-08-18 — each compliance cost a ~130K-token capture pass on top of the guaranteed end-of-session sweep.)",
   "hooks": {
     "SessionStart": [
       {
@@ -7,17 +7,6 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/skills/vault/scripts/inject-context.sh"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/skills/vault/scripts/tick-and-maybe-prompt.sh"
           }
         ]
       }
