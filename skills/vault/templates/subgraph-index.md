@@ -12,6 +12,10 @@ updated: <YYYY-MM-DD>
 
 ## Entry nodes
 
+<!-- Pointers, not summaries: one line each, 110 chars max, saying WHEN to open the node.
+     This list is injected into every session by the SessionStart hook — length here is a
+     tax paid on every session, so facts belong in the node, never in the bullet. -->
+
 - [[<folder>/<node>]] — <one-line purpose>
 - [[<folder>/<node>]] — <one-line purpose>
 

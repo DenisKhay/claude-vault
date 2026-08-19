@@ -18,12 +18,28 @@ fi
 
 # Emit the context block INVISIBLY: JSON additionalContext + suppressOutput — the model gets the
 # block, the UI renders nothing (the old plain-stdout form printed a wall at every session start).
-# Without jq, fall back to plain stdout (visible, but never silently dropped).
+#
+# The block goes to every renderer over STDIN, never argv: a single argv string is capped at
+# MAX_ARG_STRLEN (128 KiB), and the old `jq --arg c "$block"` form hit that ceiling for real —
+# one subgraph's Entry-nodes list had grown to 110 KiB, execve returned E2BIG, and the hook died
+# emitting NOTHING, so sessions silently started with no vault at all. `printf` is a bash builtin,
+# so the pipe below never execve's the block.
+#
+# Three renderers, tried in order, each falling through only on failure or empty output — the one
+# thing this function may never do is print nothing: python3 (size-guarded JSON, the normal path),
+# jq (JSON, unguarded), plain stdout (visible, but never silently dropped).
 emit_context() {
-  if command -v jq >/dev/null 2>&1; then
-    jq -nc --arg c "$1" '{suppressOutput: true, hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $c}}'
+  local block="$1" out=""
+  if command -v python3 >/dev/null 2>&1; then
+    out=$(printf '%s' "$block" | python3 "$self_dir/emit-context.py" 2>/dev/null) || out=""
+  fi
+  if [[ -z "$out" ]] && command -v jq >/dev/null 2>&1; then
+    out=$(printf '%s' "$block" | jq -Rsc '{suppressOutput: true, hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: .}}' 2>/dev/null) || out=""
+  fi
+  if [[ -n "$out" ]]; then
+    printf '%s\n' "$out"
   else
-    printf '%s\n' "$1"
+    printf '%s\n' "$block"
   fi
 }
 
@@ -98,3 +114,4 @@ Vault skill is loaded. Actualize fires on Stop and PreCompact (and advises mid-s
 EOF
 )
 emit_context "$ctx"
+exit 0
