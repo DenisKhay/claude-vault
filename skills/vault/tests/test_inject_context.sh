@@ -125,3 +125,24 @@ printf '#!/bin/sh\nexit 127\n' > "$stub_dir/jq"; chmod +x "$stub_dir/jq"
 out=$(echo "$input" | PATH="$stub_dir:$PATH" VAULT_ROOT="$tmp_vault" "$script_dir/inject-context.sh" 2>/dev/null); rc=$?
 assert_exit "0" "$rc" "inject no-renderer: exit 0"
 assert_contains "Vault context" "$out" "inject no-renderer: falls back to plain stdout"
+
+# Case 10: the budget is split PER SUBGRAPH. A flat budget spends itself on whichever subgraph renders
+# first, so a second matched subgraph (a namespace-wide `shared/`) would arrive with zero pointers.
+two_block=$(printf '## Vault context\n\nMatched subgraphs: big small\n\n### big\nEntry: a/_index.md\n'
+  for i in $(seq 1 120); do printf -- '- [[big/node-%s]] — %s\n' "$i" "$(printf 'y%.0s' $(seq 1 90))"; done
+  printf '\n### small\nEntry: b/_index.md\n'
+  for i in $(seq 1 12); do printf -- '- [[small/node-%s]] — %s\n' "$i" "$(printf 'z%.0s' $(seq 1 90))"; done
+  printf '\nRetrieval: use the `vault_search` MCP tool.\n')
+guarded=$(printf '%s' "$two_block" | VAULT_MAX_CONTEXT_BYTES=4000 python3 "$script_dir/emit-context.py" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"])')
+big_kept=$(printf '%s' "$guarded" | grep -c '^- \[\[big/')
+small_kept=$(printf '%s' "$guarded" | grep -c '^- \[\[small/')
+assert_eq "yes" "$([[ $big_kept -gt 0 ]] && echo yes || echo no)" "per-subgraph budget: big subgraph represented ($big_kept)"
+assert_eq "yes" "$([[ $small_kept -gt 0 ]] && echo yes || echo no)" "per-subgraph budget: small subgraph NOT starved ($small_kept)"
+assert_eq "yes" "$([[ $big_kept -gt $small_kept ]] && echo yes || echo no)" "per-subgraph budget: share is proportional"
+assert_contains "vault_search" "$guarded" "per-subgraph budget: trailer survives"
+
+# Case 11: the emitted block stays under the host's 10,000-character additionalContext ceiling —
+# past it Claude Code writes the block to a file and injects a 2 KB preview plus a path instead.
+chars=$(run_big env | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"]))')
+assert_eq "yes" "$([[ $chars -lt 10000 ]] && echo yes || echo no)" "default budget stays inline: $chars chars < 10000"

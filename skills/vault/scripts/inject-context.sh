@@ -83,7 +83,9 @@ PY
 )
   printf '### %s\n' "$sid"
   if [[ -n "$entry_path" ]]; then
-    printf 'Entry: %s\n' "$entry_path"
+    # Absolute, because the budget below may cut the bullet list and point the reader here — a
+    # vault-relative path would make them guess the root before they could open it.
+    printf 'Entry: %s\n' "$vroot/$entry_path"
   fi
   if [[ -n "$entry_path" && -f "$vroot/$entry_path" ]]; then
     awk '
