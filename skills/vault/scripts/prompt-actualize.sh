@@ -49,14 +49,34 @@ case "$HOOK_EVENT" in
     # Never block — let compaction always proceed. If the vault is stale,
     # invalidate the sentinel so the next Stop forces a fresh capture
     # (post-compaction). The Stop path feeds back to the model and self-resolves.
+    #
+    # Leave a DURABLE breadcrumb every time this fires. Both the 2026-08-30 audit
+    # and its re-audit concluded "PreCompact has never fired" from grepping
+    # transcripts for isCompactSummary / compact_boundary / compactMetadata and
+    # finding zero hits across 90+ files. That inference is void: Claude Code's
+    # docs state the transcript JSONL entry format is internal and unstable, so
+    # absence of a key we guessed at is not absence of the event. Auto-compaction
+    # is on by default and does fire this hook with trigger=auto, so it may well
+    # have been firing all along. Guessing at someone else's internal format is
+    # how a capture surface goes unexamined for months; a line we write ourselves
+    # settles it in one compaction.
+    trig=$(echo "$HOOK_INPUT_RAW" | jq -r '.trigger // "?"' 2>/dev/null || echo "?")
+    log_dir="${VAULT_STATE_DIR:-$HOME/.claude/vault-state}"
     if [[ -f "$actualize_file" ]]; then
       freshness="${VAULT_ACTUALIZE_FRESHNESS_SECONDS:-1800}"
       age=$(( $(date +%s) - $(stat -c %Y "$actualize_file" 2>/dev/null || echo 0) ))
       if (( age < freshness )); then
+        { mkdir -p "$log_dir" && printf '%s\t%s\tPreCompact\t%s\tfresh-sentinel-kept\tage=%s\n' \
+            "$(date -Is)" "$HOOK_SESSION_ID" "$trig" "$age" >> "$log_dir/hook-events.log"; } 2>/dev/null
         exit 0
       fi
       rm -f "$actualize_file" 2>/dev/null
+      { mkdir -p "$log_dir" && printf '%s\t%s\tPreCompact\t%s\tsentinel-invalidated\tage=%s\n' \
+          "$(date -Is)" "$HOOK_SESSION_ID" "$trig" "$age" >> "$log_dir/hook-events.log"; } 2>/dev/null
       echo "Vault sync (pre-compact): vault stale — invalidated so the next stop re-captures. Compacting." >&2
+    else
+      { mkdir -p "$log_dir" && printf '%s\t%s\tPreCompact\t%s\tno-sentinel\tage=-\n' \
+          "$(date -Is)" "$HOOK_SESSION_ID" "$trig" >> "$log_dir/hook-events.log"; } 2>/dev/null
     fi
     exit 0
     ;;
