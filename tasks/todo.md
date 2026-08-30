@@ -79,7 +79,12 @@ resolve at launch. Existing sessions keep running 1.1.1 (or 1.0.5) until restart
   before staging, redacted findings, `vault-allow-secret` escape hatch. Live store scanned clean
   (1,124 files, 1 true false positive marked). Working tree and full history were already clean,
   so it is preventive.
-- Held-out bench battery — the current 67/92/96 is not held out; build a low-overlap set and report both
+- ~~Held-out bench battery~~ → SHIPPED: `battery_heldout.json` (30 symptom-voice queries) + `bench.py`
+  now measures query/target word overlap and stratifies every result by it, so a battery reports its own
+  overfit. Honest number is **33/63/83 @ 42% overlap** vs the legacy harness's 71/92/96 @ 79% overlap.
+  Follow-up this UNBLOCKS (new work, not audit debt): 5 of 30 miss at hit@8 on very reasonable queries
+  (H08 disk-full, H10 tv gateway, H11 lockscreen password, H13 theme not listed, H25 stale rows on error).
+  There is now a metric to tune against — before this there was only a number that could not move.
 - Archived downrank buries nodes ~16 ranks past default k=8
 - Legacy `vault.db` left at v1 schema for still-running 1.0.5 servers
 - Recovering the six facts commit `3cead8e` erased

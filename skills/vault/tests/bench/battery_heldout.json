@@ -1,0 +1,36 @@
+[
+  {"id": "H01", "cat": "symptom", "q": "chat apps stop updating while the vpn is on but normal pages still load", "gt": ["machine/bugs/browsec-tunnel-pmtu-blackhole-breaks-websockets.md"]},
+  {"id": "H02", "cat": "symptom", "q": "whole computer froze solid and I had to hold the power button", "gt": ["machine/bugs/memory-livelock-hard-freeze.md"]},
+  {"id": "H03", "cat": "symptom", "q": "it powered off by itself while I was not even doing anything", "gt": ["machine/bugs/thermal-shutdown-idle-no-process.md", "machine/bugs/thinkbook-thermal-mitigation-stack.md"]},
+  {"id": "H04", "cat": "howto", "q": "can I make the laptop quieter when it gets loud", "gt": ["machine/architecture/thinkbook-fan-control-map.md"]},
+  {"id": "H05", "cat": "symptom", "q": "my headphones stop pairing every time I switch operating systems", "gt": ["machine/bugs/bluetooth-dual-boot-linkkey-mismatch.md"]},
+  {"id": "H06", "cat": "symptom", "q": "screen stays black after boot with the graphics card", "gt": ["machine/bugs/nvidia-forced-head-black-screen.md"]},
+  {"id": "H07", "cat": "symptom", "q": "no sound after restarting until I replug something", "gt": ["machine/bugs/sof-audio-pro-profile-and-boot-race.md"]},
+  {"id": "H08", "cat": "symptom", "q": "everything started failing to write, ran out of room on the drive", "gt": ["machine/bugs/disk-full-enospc-claude-harness.md"]},
+  {"id": "H09", "cat": "symptom", "q": "my shell script quietly exits early when a search finds nothing", "gt": ["machine/bugs/pipefail-grep-q-false-negative.md"]},
+  {"id": "H10", "cat": "concept", "q": "how is the television routed through the second computer", "gt": ["machine/architecture/miku-vpn-tv-gateway.md"]},
+
+  {"id": "H11", "cat": "symptom", "q": "the lock screen keeps rejecting my correct password", "gt": ["kde-lockscreen/bugs/pam-service-name-mismatch.md"]},
+  {"id": "H12", "cat": "symptom", "q": "installed a theme and now I cannot get back into my desktop", "gt": ["kde-lockscreen/bugs/broken-theme-lockout.md"]},
+  {"id": "H13", "cat": "symptom", "q": "my theme does not appear in the picker list at all", "gt": ["kde-lockscreen/bugs/symlink-lnf-invisible.md"]},
+  {"id": "H14", "cat": "symptom", "q": "the monitor never goes to sleep when I leave it idle", "gt": ["kde-lockscreen/dependencies/nvidia-x11-no-dpms.md"]},
+  {"id": "H15", "cat": "symptom", "q": "watching a folder for changes stops working once there are too many", "gt": ["kde-lockscreen/dependencies/inotify-limit-on-kde.md"]},
+
+  {"id": "H16", "cat": "symptom", "q": "my hook's output gets cut off when it is long", "gt": ["claude-config/hooks/hook-additional-context-limits.md"]},
+  {"id": "H17", "cat": "symptom", "q": "I installed a newer version but the old behaviour is still running", "gt": ["claude-config/architecture/plugin-hook-paths-pin-at-session-start.md"]},
+  {"id": "H18", "cat": "symptom", "q": "a commit disappeared after an interrupted rebase", "gt": ["claude-config/bugs/sync-sh-unguarded-git-surface.md"]},
+  {"id": "H19", "cat": "howto", "q": "how can a script tell which conversation it belongs to", "gt": ["claude-config/patterns/session-id-discovery.md"]},
+  {"id": "H20", "cat": "howto", "q": "how do I write tests for shell scripts in this project", "gt": ["claude-config/patterns/bash-tdd-framework.md"]},
+
+  {"id": "H21", "cat": "symptom", "q": "typing in the dropdown matches hidden ids instead of what is displayed", "gt": ["lifedl/shared/dependencies/antd-select-filters-by-value.md"]},
+  {"id": "H22", "cat": "symptom", "q": "my await resolves later than I expected after saving", "gt": ["lifedl/shared/dependencies/tanstack-mutateasync-awaits-onsuccess.md"]},
+  {"id": "H23", "cat": "howto", "q": "when should the save control become clickable", "gt": ["lifedl/shared/patterns/save-button-pattern.md"]},
+  {"id": "H24", "cat": "symptom", "q": "russian sites stop resolving while I am connected", "gt": ["lifedl/shared/environment/amnezia-vpn-dns-kills-ru-zones.md", "lifedl/shared/environment/vpn-down-dns-signature.md"]},
+  {"id": "H25", "cat": "symptom", "q": "old rows stay on screen after a request errors out", "gt": ["lifedl/shared/patterns/react-query-failed-refetch-keeps-data.md"]},
+
+  {"id": "H26", "cat": "symptom", "q": "two instances grabbed the same port", "gt": ["pantheon/architecture/port-allocation.md"]},
+  {"id": "H27", "cat": "concept", "q": "how much does running the whole fleet actually cost", "gt": ["pantheon/architecture/token-economics.md"]},
+  {"id": "H28", "cat": "symptom", "q": "all my parallel agents died at once and nothing was saved", "gt": ["pantheon/dependencies/workflow-agent-model-inheritance.md"]},
+  {"id": "H29", "cat": "symptom", "q": "I attached to the wrong development server", "gt": ["pantheon/architecture/dev-server-discovery.md"]},
+  {"id": "H30", "cat": "concept", "q": "what has to pass before a task counts as finished", "gt": ["pantheon/architecture/definition-of-done.md"]}
+]
