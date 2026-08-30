@@ -59,6 +59,8 @@ Everything **degrades gracefully**: no Ollama → keyword-only (BM25); no numpy 
 
 ## Install
 
+### First machine
+
 ```text
 # 1. add this repo as a plugin marketplace, then install the plugin
 /plugin marketplace add DenisKhay/claude-vault
@@ -66,11 +68,44 @@ Everything **degrades gracefully**: no Ollama → keyword-only (BM25); no numpy 
 
 # 2. (new shell) scaffold the data root ~/Vaults — idempotent, never clobbers
 bash ~/.claude/plugins/<...>/claude-vault/scripts/bootstrap.sh
-#   or clone + run directly:  git clone … && bash claude-vault/scripts/bootstrap.sh
 
 # 3. build the search index (optional but recommended)
 python3 <plugin>/skills/vault/retrieval/vault_search.py --reindex
 ```
+
+### Second machine — CLONE FIRST
+
+Your notes live in their own git repo; the plugin is only the engine. On a machine that
+should share an existing vault, **clone the content repo before running `bootstrap.sh`**:
+
+```text
+# 1. install the plugin exactly as above (steps 1 only)
+
+# 2. clone YOUR vault into ~/Vaults — this must come first
+git clone <your-vault-remote> ~/Vaults
+
+# 3. now scaffold: it fills in only what the clone is missing, and clobbers nothing
+bash ~/.claude/plugins/<...>/claude-vault/scripts/bootstrap.sh
+
+# 4. build the index locally (.index/ is gitignored, so it does NOT come with the clone)
+python3 <plugin>/skills/vault/retrieval/vault_search.py --reindex
+```
+
+Order matters: `bootstrap.sh` creates `_registry.yaml` and `_index.md` when they are
+absent, and `git clone` refuses a non-empty target directory — so bootstrapping first
+leaves you unable to clone into `~/Vaults` without moving files by hand, and you end up
+with an empty vault that looks correctly installed.
+
+Two more things to expect on machine 2, neither of them a fault:
+
+- **The first search blocks while embeddings build** — roughly a minute for ~1,100 nodes,
+  because `.index/` is derived state and is deliberately not committed. Keyword search
+  works throughout; semantic ranking arrives when the build finishes.
+- **The registry must resolve on this machine.** Entries match by `git_remote` first, then
+  repo name, then absolute path. Run `python3 <plugin>/skills/vault/scripts/registry-lint.py`
+  after cloning: `dead-identity` warnings name subgraphs whose repos are not present here,
+  and those subgraphs will silently inject nothing until the repo exists or the entry is
+  updated.
 
 Plugins resolve their own location via `${CLAUDE_PLUGIN_ROOT}`, so the hooks and MCP server work wherever Claude Code installs them — no path editing.
 
