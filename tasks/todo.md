@@ -96,5 +96,14 @@ resolve at launch. Existing sessions keep running 1.1.1 (or 1.0.5) until restart
   4 reachable within k=8, to 23 ranked #1 / 49 reachable. Pinned by tests/test_archived_rank.sh, which
   needs a 40-doc fixture — the burial cannot reproduce in a small corpus, so a naive test passes at any
   penalty. NOT 1.0: without a penalty an archived copy outranks the live node that superseded it.
-- Legacy `vault.db` left at v1 schema for still-running 1.0.5 servers
-- Recovering the six facts commit `3cead8e` erased
+- ~~Legacy `vault.db` at v1 schema for still-running 1.0.5 servers~~ → CLOSED: self-resolving. The only
+  affected session (algos) has ended and will come up on the current plugin when resumed with `claude -c`.
+- ~~Recovering the six facts commit `3cead8e` erased~~ → DONE 2026-08-30: restored into
+  `machine/architecture/tizen-tv-remote-monitor-plan.md` as an "Alternatives considered" section
+  (VNC Remote Access, noVNC, the xrdp trap, Miracast, the 2-free-CRTC capacity fact, the alternative
+  sideload route). The node had been rewritten plan->WORKING, which was right; deleting the decision
+  record was not. Audited the rest of that commit: every other removal was a frontmatter date bump
+  except installability.md, which was rewritten in place and lost nothing.
+- ~~PreCompact never fired~~ → RETRACTED, not fixed: the claim came from grepping an undocumented,
+  version-unstable transcript format. 1.4.0 makes the hook log its own firings instead.
+- ~~rejected.log on tmpfs~~ → SHIPPED: `rejected-log.sh` writes to ~/.claude/vault-state/.
