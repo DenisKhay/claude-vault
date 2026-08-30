@@ -75,6 +75,10 @@ resolve at launch. Existing sessions keep running 1.1.1 (or 1.0.5) until restart
 
 ## Deferred (needs measurement design, not a patch)
 
+- ~~D6 secrets guard on the push path~~ → SHIPPED in 1.3.0 (`5aa920e`): `secret-scan.sh`, fail-closed
+  before staging, redacted findings, `vault-allow-secret` escape hatch. Live store scanned clean
+  (1,124 files, 1 true false positive marked). Working tree and full history were already clean,
+  so it is preventive.
 - Held-out bench battery — the current 67/92/96 is not held out; build a low-overlap set and report both
 - Archived downrank buries nodes ~16 ranks past default k=8
 - Legacy `vault.db` left at v1 schema for still-running 1.0.5 servers
