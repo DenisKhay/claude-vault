@@ -64,6 +64,28 @@ if [[ -n "$inflight" ]]; then
   exit 2
 fi
 
+# --- Credential guard (locked decision D6) ------------------------------------
+# Scanned BEFORE staging, so a refusal leaves the index exactly as it was found.
+# Auto-push means an accidentally captured token reaches a remote — permanently,
+# in history — within seconds of being written, with no human in the loop.
+scan_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -x "$scan_self_dir/secret-scan.sh" || -f "$scan_self_dir/secret-scan.sh" ]]; then
+  if (( ${#PATHS[@]} )); then
+    candidates=("${PATHS[@]}")
+  else
+    mapfile -t candidates < <( { git diff --name-only HEAD -- 2>/dev/null; \
+                                 git ls-files --others --exclude-standard 2>/dev/null; } | sort -u )
+  fi
+  if (( ${#candidates[@]} )); then
+    if ! scan_out=$(bash "$scan_self_dir/secret-scan.sh" "${candidates[@]}" 2>&1); then
+      echo "sync.sh: ⚠ REFUSING — the sweep carries what looks like a credential."
+      printf '%s\n' "$scan_out"
+      echo "sync.sh: nothing was staged or committed; your files are untouched on disk."
+      exit 2
+    fi
+  fi
+fi
+
 if (( ${#PATHS[@]} )); then
   git add -- "${PATHS[@]}" 2>/dev/null
 else

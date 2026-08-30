@@ -6,30 +6,6 @@
 sync_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYNC="$(cd "$sync_self_dir/../scripts" && pwd)/sync.sh"
 
-# Two clones over one origin, with B's pushed commit conflicting against A's local
-# one — so A is genuinely diverged against a reachable remote.
-_sync_fixture() {
-  local root="$1"
-  rm -rf "$root"; mkdir -p "$root"
-  git init -q --bare -b main "$root/origin.git"
-  git clone -q "$root/origin.git" "$root/A" 2>/dev/null
-  git -C "$root/A" config user.email t@t; git -C "$root/A" config user.name t
-  mkdir -p "$root/A/sg"
-  printf '# index\n\n## Entry nodes\n\n- [[sg/one]] — base\n' > "$root/A/sg/_index.md"
-  git -C "$root/A" add -A; git -C "$root/A" commit -qm base
-  git -C "$root/A" push -q -u origin main
-
-  git clone -q "$root/origin.git" "$root/B" 2>/dev/null
-  git -C "$root/B" config user.email t@t; git -C "$root/B" config user.name t
-  printf '# index\n\n## Entry nodes\n\n- [[sg/two]] — from B\n' > "$root/B/sg/_index.md"
-  git -C "$root/B" add -A; git -C "$root/B" commit -qm B; git -C "$root/B" push -q
-
-  printf '# index\n\n## Entry nodes\n\n- [[sg/three]] — from A\n' > "$root/A/sg/_index.md"
-  git -C "$root/A" add -A; git -C "$root/A" commit -qm A
-  # A cloned before B pushed, so its origin/main ref is stale — without this fetch
-  # a `rebase origin/main` in the tests below is a silent no-op.
-  git -C "$root/A" fetch -q origin
-}
 
 # --- C1a: a sweep during an in-progress rebase must not destroy the sweep ------
 tmp="$(mktemp -d)"
