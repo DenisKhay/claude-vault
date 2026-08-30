@@ -55,15 +55,29 @@ assert_exit "0" "$ec" "prompt Stop fresh-sentinel: exit 0"
 assert_eq "" "$out" "prompt Stop fresh-sentinel: no output"
 rm -rf "/tmp/vault-${sid}"
 
-# Case 7: Stop with stale sentinel → exit 0 (first-actualize-only: file exists = pass)
+# Case 7a: Stop with sentinel older than freshness → exit 2, delta re-sweep prompt
+# (age-based re-arm, 2026-08-30: the old first-actualize-only gate lost every session tail)
 sid="stale-actualize"
+rm -rf "/tmp/vault-${sid}"
+mkdir -p "/tmp/vault-${sid}"
+touch -d "10 minutes ago" "/tmp/vault-${sid}/last-actualize"
+input=$(jq -nc --arg sid "$sid" '{session_id:$sid, cwd:"/x", hook_event_name:"Stop", stop_hook_active:false}')
+out=$(echo "$input" | VAULT_ACTUALIZE_FRESHNESS_SECONDS=300 "$script_dir/prompt-actualize.sh" 2>&1) && ec=$? || ec=$?
+assert_exit "2" "$ec" "prompt Stop stale-sentinel: exit 2 (age-based re-arm)"
+assert_contains "sweep the DELTA" "$out" "prompt Stop stale-sentinel: asks for a delta sweep"
+assert_contains "touch /tmp/vault-${sid}/last-actualize" "$out" "prompt Stop stale-sentinel: includes touch command"
+rm -rf "/tmp/vault-${sid}"
+
+# Case 7b: Stop with sentinel within the default freshness window (30 min) → exit 0
+sid="fresh-enough-actualize"
 rm -rf "/tmp/vault-${sid}"
 mkdir -p "/tmp/vault-${sid}"
 touch -d "10 minutes ago" "/tmp/vault-${sid}/last-actualize"
 input=$(jq -nc --arg sid "$sid" '{session_id:$sid, cwd:"/x", hook_event_name:"Stop", stop_hook_active:false}')
 out=$(echo "$input" | "$script_dir/prompt-actualize.sh" 2>&1)
 ec=$?
-assert_exit "0" "$ec" "prompt Stop stale-sentinel: exit 0 (first-actualize-only)"
+assert_exit "0" "$ec" "prompt Stop within-freshness: exit 0"
+assert_eq "" "$out" "prompt Stop within-freshness: no output"
 rm -rf "/tmp/vault-${sid}"
 
 # Case 9: PreCompact with stale sentinel → exit 0, invalidates sentinel (next Stop re-captures)

@@ -38,7 +38,11 @@ def _limit(name: str, default: int) -> int:
 
 
 MAX_BULLET_CHARS = _limit("VAULT_MAX_BULLET_CHARS", 200)
-MAX_CONTEXT_BYTES = _limit("VAULT_MAX_CONTEXT_BYTES", 8192)
+# 7000, not 8192: the byte budget covers BULLETS only — headers, Entry paths, the
+# retrieval trailer and the divergence/unswept-tail notices ride on top, and the
+# worst measured block (multi-subgraph + notices) reached 9006 B against the host's
+# 10,000-char spill ceiling. 7000 keeps ~1.2KB of unbudgeted overhead + real margin.
+MAX_CONTEXT_BYTES = _limit("VAULT_MAX_CONTEXT_BYTES", 7000)
 MIN_SECTION_BULLETS = 3  # every matched subgraph gets a voice, however small its share
 
 
@@ -68,29 +72,39 @@ def guard(block: str) -> str:
     out = []
     for sec, count in zip(sections, counts):
         share = int(MAX_CONTEXT_BYTES * count / total) if count else 0
-        spent, kept, dropped, cut_at = 0, 0, 0, None
-        for line in sec:
+        # Selection is NEWEST-FIRST, presentation stays in curated order. Capture
+        # appends new bullets at the BOTTOM of an Entry list, and the old top-down
+        # cut delivered the oldest pointers while omitting exactly the newest
+        # captures (audit 2026-08-30: 4/5 of one subgraph's August bullets sat
+        # past the cut). Walking the budget from the bottom keeps the freshest
+        # pointers; the curated reading order of the survivors is preserved.
+        bullet_idx = [i for i, l in enumerate(sec) if l.startswith("- ")]
+        clamped = {i: clamp(sec[i]) for i in bullet_idx}
+        keep = set()
+        spent = 0
+        for i in reversed(bullet_idx):
+            cost = len(clamped[i].encode("utf-8")) + 1
+            if spent + cost > share and len(keep) >= MIN_SECTION_BULLETS:
+                break
+            keep.add(i)
+            spent += cost
+        dropped = len(bullet_idx) - len(keep)
+        notice_done = False
+        for i, line in enumerate(sec):
             if not line.startswith("- "):
                 out.append(line)
                 continue
-            if dropped:
-                dropped += 1
-                continue
-            line = clamp(line)
-            spent += len(line.encode("utf-8")) + 1
-            if spent > share and kept >= MIN_SECTION_BULLETS:
-                dropped, cut_at = 1, len(out)  # note WHERE the list was cut, not just that it was
-                continue
-            out.append(line)
-            kept += 1
-        if dropped:
-            # Insert at the cut, not at the section end — appended to the end it would land after
-            # the retrieval trailer, describing a list the reader has long since scrolled past.
-            out.insert(
-                cut_at,
-                f"({dropped} more entry node(s) omitted — open the Entry file above for the "
-                f"full list, or use `vault_search`.)",
-            )
+            if i in keep:
+                out.append(clamped[i])
+            elif not notice_done:
+                # One notice, at the FIRST omitted slot — appended to the end it
+                # would land after the retrieval trailer, describing a list the
+                # reader has long since scrolled past.
+                out.append(
+                    f"({dropped} older entry node(s) omitted — open the Entry file "
+                    f"above for the full list, or use `vault_search`.)"
+                )
+                notice_done = True
     return "\n".join(out)
 
 

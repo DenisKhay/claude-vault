@@ -6,10 +6,19 @@
 - Chunked embeddings: long bodies are split into ~1500-char paragraph-aware chunks,
   each embedded; query similarity is the MAX over a doc's chunks (so content deep in
   a long node is reachable — a single whole-doc vector would dilute it).
-- Decay-aware: results get a mild recency boost from frontmatter `updated`.
-- Soft-delete: nodes with `status: archived` are excluded from the index.
+- Decay-aware: a MILD recency nudge from frontmatter `updated`. The multiplier is
+  deliberately shallow (0.95–1.0): the 2026-08-30 audit measured the old 0.6–1.0
+  span displacing stable reference nodes 15–40 ranks — burying 3-month-old
+  canonical nodes below k=8 for their own names. Dampening it was worth +5–6 hit@1.
+- Frontmatter `tags` are indexed into FTS (they were curated but retrieval-inert
+  for the vault's whole life — 1,696 occurrences invisible to search).
+- Soft-delete: nodes with `status: archived` stay INDEXED but score ×0.5 and are
+  labeled archived in results (fully hiding them made archived-unique content
+  unreachable by search — 46 nodes, at least one holding facts that exist nowhere else).
 - Incremental: only re-embeds files whose content hash changed.
 - Degrades gracefully to FTS5-only when Ollama is unreachable.
+- Subgraph scope filters accept BOTH registry ids and path-derived labels
+  (`shared` == `lifedl/shared`); unknown names are reported, never silently empty.
 
 CLI:  python3 vault_search.py "query text"      # search
       python3 vault_search.py --reindex          # force full reindex
@@ -25,6 +34,8 @@ RRF_K = 60
 DECAY_HALFLIFE_DAYS = 120.0   # mild recency prior
 CHUNK_CHARS = 1500            # embedding chunk size (well under nomic's ~2048-token window)
 SKIP_DIRS = {".index", ".obsidian", ".git", ".claude", "_templates"}
+SCHEMA_VERSION = 2            # bump forces a clean rebuild (v2: tags column, archived indexed)
+ARCHIVED_PENALTY = 0.5
 
 try:
     import numpy as np
@@ -119,10 +130,15 @@ def days_since(date_str):
 def connect():
     os.makedirs(INDEX_DIR, exist_ok=True)
     con = sqlite3.connect(DB_PATH)
+    ver = con.execute("PRAGMA user_version").fetchone()[0]
+    if ver != SCHEMA_VERSION:
+        for t in ("docs", "fts", "chunks"):
+            con.execute(f"DROP TABLE IF EXISTS {t}")
+        con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     con.execute("""CREATE TABLE IF NOT EXISTS docs(
         path TEXT PRIMARY KEY, title TEXT, subgraph TEXT, body TEXT,
-        updated TEXT, hash TEXT, emb BLOB)""")
-    con.execute("CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(path, title, body, subgraph)")
+        updated TEXT, hash TEXT, archived INTEGER DEFAULT 0, emb BLOB)""")
+    con.execute("CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(path, title, body, subgraph, tags)")
     con.execute("""CREATE TABLE IF NOT EXISTS chunks(
         path TEXT, idx INTEGER, emb BLOB, PRIMARY KEY(path, idx))""")
     return con
@@ -178,8 +194,7 @@ def reindex(con, force=False, embed_enabled=True):
         except Exception:
             continue
         meta, body = parse_frontmatter(text)
-        if str(meta.get("status", "")).lower() == "archived":
-            continue  # soft-deleted: out of the retrieval surface
+        archived = 1 if str(meta.get("status", "")).lower() == "archived" else 0
         seen.add(rel)
         h = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()
         prev = existing.get(rel)
@@ -191,11 +206,16 @@ def reindex(con, force=False, embed_enabled=True):
         title = mt.group(1).strip() if mt else os.path.basename(rel)[:-3]
         sg = subgraph_of(rel)
         updated = str(meta.get("updated") or meta.get("created") or "")
-        cur.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?,?,?,?,?)",
-                    (rel, title, sg, body, updated, h, None))
+        raw_tags = meta.get("tags")
+        if isinstance(raw_tags, (list, tuple)):
+            tags = " ".join(str(t) for t in raw_tags)
+        else:
+            tags = str(raw_tags or "")
+        cur.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?,?,?,?,?,?)",
+                    (rel, title, sg, body, updated, h, archived, None))
         cur.execute("DELETE FROM fts WHERE path=?", (rel,))
-        cur.execute("INSERT INTO fts(path,title,body,subgraph) VALUES(?,?,?,?)",
-                    (rel, title, body, sg))
+        cur.execute("INSERT INTO fts(path,title,body,subgraph,tags) VALUES(?,?,?,?,?)",
+                    (rel, title, body, sg, tags))
         # Chunked embeddings: replace this doc's chunk vectors.
         cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
         if embed_enabled:
@@ -204,7 +224,7 @@ def reindex(con, force=False, embed_enabled=True):
                 if vec:
                     cur.execute("INSERT INTO chunks(path, idx, emb) VALUES(?,?,?)",
                                 (rel, i, struct.pack("<%df" % len(vec), *vec)))
-    # prune deleted / newly-archived
+    # prune deleted files (archived nodes stay indexed, downranked at score time)
     for rel in list(existing):
         if rel not in seen:
             cur.execute("DELETE FROM docs WHERE path=?", (rel,))
@@ -212,6 +232,43 @@ def reindex(con, force=False, embed_enabled=True):
             cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
     con.commit()
     return changed
+
+
+def resolve_scopes(con, requested):
+    """Map requested scope names (registry ids OR path labels OR bare last
+    segments) to the path-derived subgraph labels the index actually stores.
+    Returns (resolved_label_set_or_None, unknown_names, known_labels)."""
+    labels = {row[0] for row in con.execute("SELECT DISTINCT subgraph FROM docs")}
+    if not requested:
+        return None, [], sorted(labels)
+    id2label = {}
+    reg = os.path.join(VAULT_ROOT, "_registry.yaml")
+    if yaml and os.path.exists(reg):
+        try:
+            data = yaml.safe_load(open(reg)) or {}
+            for sg in data.get("subgraphs") or []:
+                if isinstance(sg, dict) and sg.get("id") and sg.get("path"):
+                    p = str(sg["path"]).strip("/")
+                    parts = p.split("/")
+                    label = "/".join(parts[:2]) if len(parts) > 1 else parts[0]
+                    id2label[str(sg["id"])] = label
+        except Exception:
+            pass
+    resolved, unknown = set(), []
+    for name in requested:
+        name = str(name).strip().strip("/")
+        if name in labels:
+            resolved.add(name)
+            continue
+        if name in id2label and id2label[name] in labels:
+            resolved.add(id2label[name])
+            continue
+        suffix = {l for l in labels if l.endswith("/" + name)}
+        if suffix:
+            resolved |= suffix
+            continue
+        unknown.append(name)
+    return (resolved or None), unknown, sorted(labels)
 
 
 def _fts_query(q):
@@ -227,7 +284,7 @@ def _fts_query(q):
 def search(con, query, k=8, subgraphs=None):
     cur = con.cursor()
     sub_meta = {row[0]: row[1] for row in cur.execute("SELECT path, subgraph FROM docs")}
-    sub_set = set(subgraphs) if subgraphs else None
+    sub_set = resolve_scopes(con, subgraphs)[0] if subgraphs else None
     def in_scope(path):
         return sub_set is None or sub_meta.get(path) in sub_set
     # keyword ranks via BM25. When a subgraph filter is set, over-fetch then scope so
@@ -268,21 +325,31 @@ def search(con, query, k=8, subgraphs=None):
                 best[path] = s
         for rank, (path, _s) in enumerate(sorted(best.items(), key=lambda x: -x[1])[:60]):
             vec[path] = rank
-    # Reciprocal Rank Fusion + decay (candidates are already scope-filtered)
-    meta = {row[0]: row[1] for row in cur.execute("SELECT path, updated FROM docs")}
+    # Reciprocal Rank Fusion + decay (candidates are already scope-filtered).
+    # Decay is a shallow nudge (0.95–1.0): the old 0.6–1.0 span was measured
+    # displacing aged canonical nodes 15–40 ranks — a burial, not a nudge.
+    meta = {row[0]: (row[1], row[2]) for row in
+            cur.execute("SELECT path, updated, archived FROM docs")}
     scores = {}
     for path in set(kw) | set(vec):
         s = 0.0
         if path in kw:  s += 1.0 / (RRF_K + kw[path])
         if path in vec: s += 1.0 / (RRF_K + vec[path])
-        decay = math.exp(-math.log(2) * days_since(meta.get(path)) / DECAY_HALFLIFE_DAYS)
-        scores[path] = s * (0.6 + 0.4 * decay)   # decay nudges, never dominates
+        updated, archived = meta.get(path, ("", 0))
+        decay = math.exp(-math.log(2) * days_since(updated) / DECAY_HALFLIFE_DAYS)
+        s *= (0.95 + 0.05 * decay)
+        if archived:
+            s *= ARCHIVED_PENALTY
+        scores[path] = s
     ranked = sorted(scores.items(), key=lambda x: -x[1])[:k]
     out = []
     for path, sc in ranked:
         title = cur.execute("SELECT title FROM docs WHERE path=?", (path,)).fetchone()
-        out.append({"path": path, "title": title[0] if title else path,
-                    "subgraph": sub_meta.get(path), "score": round(sc, 5)})
+        row = {"path": path, "title": title[0] if title else path,
+               "subgraph": sub_meta.get(path), "score": round(sc, 5)}
+        if meta.get(path, ("", 0))[1]:
+            row["archived"] = True
+        out.append(row)
     return out, vector_used
 
 

@@ -1,5 +1,5 @@
 {
-  "description": "Vault capture/recall lifecycle: inject the matched subgraph on SessionStart and run a capture sweep on Stop/PreCompact. (The mid-session PostToolUse nudge was removed 2026-08-18 — each compliance cost a ~130K-token capture pass on top of the guaranteed end-of-session sweep.)",
+  "description": "Vault capture/recall lifecycle: inject the matched subgraph on SessionStart (plus a background ff-only pull and divergence/unswept-tail notices); prompt a capture sweep on Stop whenever the last sweep is missing or older than 30 minutes (age-based re-arm — the old first-sweep-only gate lost every session tail); PreCompact invalidates a stale sentinel without ever blocking; SessionEnd spools a pointer record for sessions that die unswept so the next session can mine their transcripts.",
   "hooks": {
     "SessionStart": [
       {
@@ -27,6 +27,16 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/skills/vault/scripts/prompt-actualize.sh"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/skills/vault/scripts/spool-tail.sh"
           }
         ]
       }

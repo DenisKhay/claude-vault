@@ -42,11 +42,26 @@ state_dir() {
   echo "$d"
 }
 
-# is_paused <session_id>
-# Exits 0 if the pause flag exists for this session, 1 otherwise.
+# cwd_pause_flag <cwd>
+# Echoes the cwd-keyed pause flag path. Pause is keyed by CWD, not session id:
+# the /vault-pause slash command runs in a Bash env where CLAUDE_SESSION_ID is
+# UNSET (audit 2026-08-30: the old session-keyed flag landed in vault-default/
+# while hooks checked the real uuid — pause had never actually engaged, ever).
+# Hooks DO know their cwd (stdin JSON), and the command knows $PWD — same key.
+cwd_pause_flag() {
+  local cwd="${1:-$PWD}"
+  local h
+  h=$(printf '%s' "$cwd" | md5sum 2>/dev/null | cut -c1-12)
+  echo "/tmp/vault-pause-${h:-nohash}"
+}
+
+# is_paused <session_id> [cwd]
+# Exits 0 if a pause flag exists for this session OR its cwd, 1 otherwise.
 is_paused() {
   local sid="${1:-default}"
-  [[ -f "/tmp/vault-${sid}/paused" ]]
+  local cwd="${2:-${HOOK_CWD:-$PWD}}"
+  [[ -f "/tmp/vault-${sid}/paused" ]] && return 0
+  [[ -f "$(cwd_pause_flag "$cwd")" ]]
 }
 
 # Vault root, defaulting to ~/Vaults
