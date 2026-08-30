@@ -137,7 +137,15 @@ def connect():
     # check_same_thread=False: the MCP server's pre-warm THREAD creates this
     # connection and the request loop then uses it; access is serialized by the
     # server's own lock, so cross-thread use is safe — without the flag it raises.
-    con = sqlite3.connect(DB_PATH, check_same_thread=False)
+    con = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30.0)
+    # The server's lock serializes threads inside ONE process, not the several
+    # Claude sessions that each run their own server against this file. Without
+    # these two, a reindex in one session made every other session's search fail
+    # outright with "database is locked" — a silent-empty result that reads as
+    # "no knowledge exists". WAL lets readers proceed during a write; busy_timeout
+    # makes the rest wait instead of raising.
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=30000")
     ver = con.execute("PRAGMA user_version").fetchone()[0]
     if ver != SCHEMA_VERSION:
         for t in ("docs", "fts", "chunks"):

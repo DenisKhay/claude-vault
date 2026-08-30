@@ -15,7 +15,9 @@ Checks (E = error → exit 1, W = warning, I = info):
                       (every path_prefix absent AND no local repo has that
                       remote/name) — the exact rot class that hid claude-config
   W unregistered-dir  a top-level vault dir no registry path covers (injected nowhere)
-  W bullet-overflow   entry-file "Entry nodes" bullets over 110 chars (write-time rule)
+  E bullet-overflow   entry-file "Entry nodes" bullets over 110 chars (write-time rule).
+                      An ERROR, not a warning: SKILL.md makes the capture agent run this
+                      as its write-time gate, and a warning is invisible under --quiet.
 
 Usage: registry-lint.py [--quiet]   (VAULT_ROOT env overrides ~/Vaults)
 """
@@ -99,7 +101,7 @@ def main():
                 if in_block and line.startswith("- ") and len(line) > BULLET_MAX:
                     over += 1
             if over:
-                warns.append(f"W bullet-overflow {sid}: {over} bullet(s) over {BULLET_MAX} chars in {entry}")
+                errors.append(f"E bullet-overflow {sid}: {over} bullet(s) over {BULLET_MAX} chars in {entry}")
 
         m = sg.get("match")
         if sg.get("always_in_namespace"):

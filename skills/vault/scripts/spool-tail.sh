@@ -26,11 +26,17 @@ fi
 [[ -z "$HOOK_SESSION_ID" ]] && exit 0
 
 actualize_file="/tmp/vault-${HOOK_SESSION_ID}/last-actualize"
-freshness="${VAULT_ACTUALIZE_FRESHNESS_SECONDS:-1800}"
+# Deliberately NOT the Stop re-arm's VAULT_ACTUALIZE_FRESHNESS_SECONDS. Sharing
+# that constant made the spool decline to insure exactly the window the re-arm
+# leaves open: a session killed 29 minutes after its last sweep got no re-arm (it
+# never reached a Stop) AND no spool record, which is the ordinary crash case
+# this insurance exists for. A pointer file is ~200 bytes; the only tail not
+# worth one is a sweep that just finished.
+min_age="${VAULT_SPOOL_MIN_AGE_SECONDS:-120}"
 
 if [[ -f "$actualize_file" ]]; then
   age=$(( $(date +%s) - $(stat -c %Y "$actualize_file" 2>/dev/null || echo 0) ))
-  (( age < freshness )) && exit 0
+  (( age < min_age )) && exit 0
 fi
 
 transcript=$(echo "$HOOK_INPUT_RAW" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")

@@ -61,10 +61,21 @@ vroot=$(vault_root)
 if [[ -d "$vroot/.git" ]] && command -v git >/dev/null 2>&1 && command -v flock >/dev/null 2>&1; then
   (
     flock -n 9 || exit 0
-    if ! git -C "$vroot" pull --ff-only --quiet 2>/dev/null; then
-      if ! git -C "$vroot" diff --quiet HEAD -- 2>/dev/null || \
-         ! git -C "$vroot" merge-base --is-ancestor "$(git -C "$vroot" rev-parse '@{u}' 2>/dev/null || echo HEAD)" HEAD 2>/dev/null; then
-        touch "$vroot/.sync-diverged" 2>/dev/null
+    # BatchMode/no-prompt + a hard timeout: this runs behind the same lock every
+    # sync.sh takes, so one pull hanging on a credential prompt would wedge every
+    # sweep on the machine for as long as it hangs.
+    export GIT_TERMINAL_PROMPT=0
+    export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -oBatchMode=yes -oConnectTimeout=10}"
+    _git() { if command -v timeout >/dev/null 2>&1; then timeout 60 git "$@"; else git "$@"; fi; }
+    if ! _git -C "$vroot" pull --ff-only --quiet 2>/dev/null; then
+      # A failed pull is not evidence of divergence — an unreachable remote, a
+      # dead network or an expired credential fails the same way. Claiming it
+      # writes a marker that then gets committed, so every fresh clone boots into
+      # a permanent false alarm. Only claim divergence against a LIVE remote.
+      if _git -C "$vroot" ls-remote --exit-code origin >/dev/null 2>&1; then
+        if ! git -C "$vroot" merge-base --is-ancestor "$(git -C "$vroot" rev-parse '@{u}' 2>/dev/null || echo HEAD)" HEAD 2>/dev/null; then
+          touch "$vroot/.sync-diverged" 2>/dev/null
+        fi
       fi
     else
       rm -f "$vroot/.sync-diverged" 2>/dev/null
@@ -78,21 +89,29 @@ extra_notices() {
   if [[ -f "$vroot/.sync-diverged" ]]; then
     printf '\n⚠ VAULT SYNC DIVERGED: local and remote history do not fast-forward. Do NOT auto-merge — tell the user; resolve by hand (see the vault skill), then delete %s/.sync-diverged.\n' "$vroot"
   fi
-  local spool="$HOME/.claude/vault-spool" shown=0 f
+  # The listing is capped, but NEVER silently. A truncated list with no count is
+  # the same silent-omission bug the entry-bullet budget was fixed for, and here
+  # the dropped rows are unswept sessions nobody would ever look for again.
+  local spool="$HOME/.claude/vault-spool" shown=0 total=0 f
   if [[ -d "$spool" ]]; then
     for f in "$spool"/*.json; do
       [[ -e "$f" ]] || break
       local tp
       tp=$(jq -r '.transcript_path // ""' "$f" 2>/dev/null)
       if [[ -n "$tp" && ! -f "$tp" ]]; then rm -f "$f" 2>/dev/null; continue; fi
-      if (( shown == 0 )); then
+      if (( total == 0 )); then
         printf '\n⚠ UNSWEPT SESSION TAILS pending (ended without a fresh capture sweep):\n'
       fi
-      (( shown++ ))
-      (( shown > 5 )) && continue
-      printf '  - %s (cwd %s, ended %s)\n' "${tp:-unknown-transcript}" "$(jq -r '.cwd // "?"' "$f" 2>/dev/null)" "$(jq -r '.ended_at // "?"' "$f" 2>/dev/null)"
+      total=$(( total + 1 ))
+      if (( total <= 5 )); then
+        shown=$(( shown + 1 ))
+        printf '  - %s (cwd %s, ended %s)\n' "${tp:-unknown-transcript}" "$(jq -r '.cwd // "?"' "$f" 2>/dev/null)" "$(jq -r '.ended_at // "?"' "$f" 2>/dev/null)"
+      fi
     done
-    if (( shown > 0 )); then
+    if (( total > shown )); then
+      printf '  … and %d more pending, not listed above — see %s/\n' "$(( total - shown ))" "$spool"
+    fi
+    if (( total > 0 )); then
       printf 'When convenient: mine each transcript for vault candidates (actualize rules apply), then delete its spool file from %s/.\n' "$spool"
     fi
   fi
