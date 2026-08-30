@@ -85,6 +85,10 @@ resolve at launch. Existing sessions keep running 1.1.1 (or 1.0.5) until restart
   Follow-up this UNBLOCKS (new work, not audit debt): 5 of 30 miss at hit@8 on very reasonable queries
   (H08 disk-full, H10 tv gateway, H11 lockscreen password, H13 theme not listed, H25 stale rows on error).
   There is now a metric to tune against — before this there was only a number that could not move.
-- Archived downrank buries nodes ~16 ranks past default k=8
+- ~~Archived downrank buries nodes past default k=8~~ → SHIPPED in 1.3.1: ARCHIVED_PENALTY 0.5 -> 0.95.
+  Measured on the real store: 49 archived nodes queried by their own titles went from 0 ranked #1 /
+  4 reachable within k=8, to 23 ranked #1 / 49 reachable. Pinned by tests/test_archived_rank.sh, which
+  needs a 40-doc fixture — the burial cannot reproduce in a small corpus, so a naive test passes at any
+  penalty. NOT 1.0: without a penalty an archived copy outranks the live node that superseded it.
 - Legacy `vault.db` left at v1 schema for still-running 1.0.5 servers
 - Recovering the six facts commit `3cead8e` erased

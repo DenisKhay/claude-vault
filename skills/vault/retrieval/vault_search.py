@@ -40,7 +40,7 @@ DECAY_HALFLIFE_DAYS = 120.0   # mild recency prior
 CHUNK_CHARS = 1500            # embedding chunk size (well under nomic's ~2048-token window)
 SKIP_DIRS = {".index", ".obsidian", ".git", ".claude", "_templates"}
 SCHEMA_VERSION = 2            # bump forces a clean rebuild (v2: tags column, archived indexed)
-ARCHIVED_PENALTY = 0.5
+ARCHIVED_PENALTY = 0.95   # a nudge, NOT a hide — see the note above the RRF block
 
 try:
     import numpy as np
@@ -344,6 +344,17 @@ def search(con, query, k=8, subgraphs=None):
     # Reciprocal Rank Fusion + decay (candidates are already scope-filtered).
     # Decay is a shallow nudge (0.95–1.0): the old 0.6–1.0 span was measured
     # displacing aged canonical nodes 15–40 ranks — a burial, not a nudge.
+    #
+    # ARCHIVED_PENALTY obeys the same rule, and for a while it did not: it shipped
+    # at 0.5 — harsher than the 0.6 condemned above — one line below this comment.
+    # RRF scores are tightly packed (1/(60+rank)), so halving a top hit lands it
+    # where rank ~60 sits: the demotion worked as a delete. Measured 2026-08-30
+    # over the real vault's 49 archived nodes, queried by their own titles:
+    #   0.5  → 0/49 ranked #1,  4/49 within default k=8, median drop 13 ranks
+    #   0.95 → 23/49 ranked #1, 49/49 within default k=8, median drop 1 rank
+    # Do not "simplify" this to 1.0: at no penalty an archived copy outranks the
+    # live node that superseded it, which is the case the penalty exists for.
+    # Both properties are pinned by tests/test_archived_rank.sh.
     meta = {row[0]: (row[1], row[2]) for row in
             cur.execute("SELECT path, updated, archived FROM docs")}
     scores = {}
