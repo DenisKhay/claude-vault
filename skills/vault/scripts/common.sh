@@ -64,6 +64,19 @@ is_paused() {
   [[ -f "$(cwd_pause_flag "$cwd")" ]]
 }
 
+# vault_git_lock [vault_root]
+# Echoes the git lock path for a vault root. Keyed by ROOT, not global: a single
+# /tmp/vault-git.lock made every vault serialize against every other one, so a
+# fixture vault in /tmp could block a real sweep on ~/Vaults for the full 30s
+# timeout (observed in the test suite 2026-08-30 — sync tests failed with "could
+# not take the vault git lock" because an unrelated fixture held it).
+vault_git_lock() {
+  local root="${1:-$(vault_root)}"
+  local h
+  h=$(printf '%s' "$root" | md5sum 2>/dev/null | cut -c1-12)
+  echo "/tmp/vault-git-${h:-default}.lock"
+}
+
 # Vault root, defaulting to ~/Vaults
 vault_root() {
   echo "${VAULT_ROOT:-$HOME/Vaults}"

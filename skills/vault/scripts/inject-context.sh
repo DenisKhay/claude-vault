@@ -12,8 +12,10 @@ source "$self_dir/common.sh"
 
 read_hook_input
 
+paused_flag=""
 if is_paused "$HOOK_SESSION_ID"; then
-  exit 0
+  paused_flag="$(cwd_pause_flag "${HOOK_CWD:-$PWD}")"
+  [[ -f "$paused_flag" ]] || paused_flag="/tmp/vault-${HOOK_SESSION_ID}/paused"
 fi
 
 # Emit the context block INVISIBLY: JSON additionalContext + suppressOutput — the model gets the
@@ -80,7 +82,7 @@ if [[ -d "$vroot/.git" ]] && command -v git >/dev/null 2>&1 && command -v flock 
     else
       rm -f "$vroot/.sync-diverged" 2>/dev/null
     fi
-  ) 9>/tmp/vault-git.lock >/dev/null 2>&1 &
+  ) 9>"$(vault_git_lock "$vroot")" >/dev/null 2>&1 &
   disown 2>/dev/null || true
 fi
 
@@ -116,6 +118,44 @@ extra_notices() {
     fi
   fi
 }
+
+# A pause used to exit here in silence, which made it the one control in the
+# system whose failure mode is invisible in BOTH directions: nobody could tell it
+# was on, and nobody could tell it had never engaged (it hadn't, for months —
+# the flag was keyed on an unset variable until 1.1.0). It is deliberately NOT
+# auto-expiring: lapsing a pause would resume capture inside exactly the
+# sensitive work it was turned on for, and auto-push would put that on a remote
+# within seconds. The safe design is a pause that persists and cannot hide.
+if [[ -n "$paused_flag" ]]; then
+  since=""; age_note=""
+  if [[ -f "$paused_flag" ]]; then
+    set_at=$(stat -c %Y "$paused_flag" 2>/dev/null || echo 0)
+    if (( set_at > 0 )); then
+      hours=$(( ( $(date +%s) - set_at ) / 3600 ))
+      since=" (paused $(date -d "@$set_at" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '?')"
+      if (( hours >= 24 )); then
+        since+=", $(( hours / 24 ))d $(( hours % 24 ))h ago)"
+        age_note="
+This pause is over a day old. If it outlived the work it was for, everything learned
+in this workspace since then was never captured — resume and sweep while the
+transcripts still exist."
+      else
+        since+=", ${hours}h ago)"
+      fi
+    fi
+  fi
+  emit_context "## Vault context
+
+⏸ VAULT PAUSED for this workspace${since}.
+
+No context was injected, no capture sweep will run, and no crash-recovery pointer
+will be spooled if this session dies. Knowledge earned here goes nowhere until the
+pause is lifted with \`/vault-resume\`.
+
+  cwd:  $HOOK_CWD
+  flag: $paused_flag${age_note}"
+  exit 0
+fi
 
 mapfile -t match_ids < <("$self_dir/match.sh" "$HOOK_CWD" 2>/dev/null)
 first="${match_ids[0]:-MISS}"

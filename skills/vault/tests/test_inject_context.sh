@@ -33,12 +33,21 @@ assert_contains "NO SUBGRAPH MATCHED" "$out" "inject MISS: noisy marker"
 assert_contains "vault skill in 'enroll'" "$out" "inject MISS: enroll instruction"
 assert_contains "/tmp/random-unenrolled-repo" "$out" "inject MISS: cwd echoed"
 
-# Case 3: Paused session — silent (no output)
+# Case 3: Paused session — announces the pause instead of injecting context.
+# Contract changed in 1.3.2. This used to assert SILENCE, which is precisely what
+# made a forgotten pause undetectable: suppressing the vault context is the point,
+# suppressing the fact that it is suppressed is the bug. See test_pause_visibility.sh.
 sid="paused-session-1"
 mkdir -p "/tmp/vault-${sid}"
 touch "/tmp/vault-${sid}/paused"
 out=$(run_inject "/home/user/projects/portals" "$sid")
-assert_eq "" "$out" "inject paused: no output"
+assert_contains "VAULT PAUSED" "$out" "inject paused: announces the pause"
+if [[ "$out" == *"Entry nodes"* || "$out" == *"NO SUBGRAPH MATCHED"* ]]; then
+  got=leaked
+else
+  got=suppressed
+fi
+assert_eq "suppressed" "$got" "inject paused: still injects no vault context"
 rm -rf "/tmp/vault-${sid}"
 
 # Case 4: Empty stdin (defensive)

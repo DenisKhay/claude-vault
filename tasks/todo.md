@@ -75,6 +75,12 @@ resolve at launch. Existing sessions keep running 1.1.1 (or 1.0.5) until restart
 
 ## Deferred (needs measurement design, not a patch)
 
+- ~~/vault-pause never expires and is silent~~ → SHIPPED in 1.3.2: SessionStart now announces the
+  pause with its age and escalates past a day, and says crash-spooling is off too. Deliberately NOT
+  auto-expiring — lapsing would resume capture inside the sensitive work it was set for, and sweeps
+  auto-push. Also fixed en route: the git lock was global (`/tmp/vault-git.lock`), so any fixture
+  vault serialized against the real one — it is now keyed per vault root.
+
 - ~~D6 secrets guard on the push path~~ → SHIPPED in 1.3.0 (`5aa920e`): `secret-scan.sh`, fail-closed
   before staging, redacted findings, `vault-allow-secret` escape hatch. Live store scanned clean
   (1,124 files, 1 true false positive marked). Working tree and full history were already clean,

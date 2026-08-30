@@ -41,7 +41,15 @@ export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -oBatchMode=yes -oConnectTimeout=
 [[ -d "$VROOT/.git" ]] || { echo "sync.sh: $VROOT is not a git repo — nothing to sync"; exit 0; }
 command -v git >/dev/null 2>&1 || { echo "sync.sh: git not found"; exit 0; }
 
-exec 9>/tmp/vault-git.lock
+sync_common="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+# shellcheck source=common.sh
+[[ -f "$sync_common" ]] && source "$sync_common"
+if declare -f vault_git_lock >/dev/null 2>&1; then
+  LOCKFILE="$(vault_git_lock "$VROOT")"
+else
+  LOCKFILE="/tmp/vault-git-$(printf '%s' "$VROOT" | md5sum 2>/dev/null | cut -c1-12).lock"
+fi
+exec 9>"$LOCKFILE"
 flock -w 30 9 || { echo "sync.sh: could not take the vault git lock (another sync running?)"; exit 1; }
 
 cd "$VROOT" || exit 1
