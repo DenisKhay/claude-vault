@@ -27,7 +27,12 @@ import os, sys, re, json, sqlite3, hashlib, urllib.request, math, datetime, stru
 
 VAULT_ROOT = os.environ.get("VAULT_ROOT", os.path.expanduser("~/Vaults"))
 INDEX_DIR  = os.path.join(VAULT_ROOT, ".index")
-DB_PATH    = os.path.join(INDEX_DIR, "vault.db")
+# Schema-versioned FILENAME, not just a PRAGMA: a schema bump in a shared file
+# crashes every still-running old server process ("docs has 8 columns but 7
+# values") the moment its next tree-change reindex fires. Old code keeps its own
+# working vault.db; each schema generation gets its own file. Derived state —
+# .index/ is gitignored, a fresh build costs ~90s with embeddings.
+DB_PATH    = os.path.join(INDEX_DIR, "vault-v2.db")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 EMBED_MODEL = os.environ.get("VAULT_EMBED_MODEL", "nomic-embed-text")
 RRF_K = 60
@@ -129,7 +134,10 @@ def days_since(date_str):
 
 def connect():
     os.makedirs(INDEX_DIR, exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
+    # check_same_thread=False: the MCP server's pre-warm THREAD creates this
+    # connection and the request loop then uses it; access is serialized by the
+    # server's own lock, so cross-thread use is safe — without the flag it raises.
+    con = sqlite3.connect(DB_PATH, check_same_thread=False)
     ver = con.execute("PRAGMA user_version").fetchone()[0]
     if ver != SCHEMA_VERSION:
         for t in ("docs", "fts", "chunks"):
