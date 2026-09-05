@@ -115,15 +115,31 @@ Five dead-session tails piled up in `~/.claude/vault-spool/` and every SessionSt
 subagents on them. Two of the five tails were empty (the sweep's own closing output). The
 SessionEnd hook cannot prompt a model, but it can spawn one.
 
-- [ ] `transcript-digest.py`: render a transcript JSONL to a readable digest, mark every
+- [x] `transcript-digest.py`: render a transcript JSONL to a readable digest, mark every
       Stop-hook sweep boundary, print `tail_bytes=` for the part after the last boundary
-- [ ] `spool-drain.sh`: detached launcher — render, measure, under the floor → delete the
+- [x] `spool-drain.sh`: detached launcher — render, measure, under the floor → delete the
       spool + log; else spawn `claude -p --model sonnet` as a spool worker in the dead cwd;
       attempts counter in the spool record, dry-run mode for tests
-- [ ] `spool-tail.sh` calls the drain after spooling; worker sessions never spool themselves
-- [ ] `prompt-actualize.sh` stays silent for worker sessions (no self-sweep loop)
-- [ ] `inject-context.sh`: worker sessions get no spool listing; normal sessions relaunch
+- [x] `spool-tail.sh` calls the drain after spooling; worker sessions never spool themselves
+- [x] `prompt-actualize.sh` stays silent for worker sessions (no self-sweep loop)
+- [x] `inject-context.sh`: worker sessions get no spool listing; normal sessions relaunch
       stale spools (no live worker, attempts left) and only list what auto-drain gave up on
-- [ ] tests: `test_spool_drain.sh`
-- [ ] SKILL.md spool-worker variant + state-file rows; README + ARCHITECTURE one-liners
-- [ ] bump 1.6.0, run suite, commit, push, reinstall
+- [x] tests: `test_spool_drain.sh`
+- [x] SKILL.md spool-worker variant + state-file rows; README + ARCHITECTURE one-liners
+- [x] bump 1.6.0, run suite, commit, push, reinstall
+
+### Review (2026-09-05, shipped as 1.6.0 → 1.6.2)
+- Floor validated on the five real tails: 12531 / 6668 B spawned, 3080 / 807 / 227 B dropped —
+  the same 2-of-5 verdict a live session reached by hand. Text-only counting is what makes the
+  bookkeeping tails (tool traffic, one "no knowledge delta" line) fall under 4 KB.
+- 1.6.0's first real worker died in 3 s: `--allowedTools` is variadic and ate the positional
+  prompt. 1.6.1 feeds the prompt over stdin; a test now asserts the prompt is absent from argv.
+- 1.6.1's first real worker (machine tail, 6668 B, facts already captured that day) ran 3 min on
+  sonnet, ended `no knowledge delta`, cleared its record, left the vault untouched, and was not
+  spooled by its own SessionEnd. It located the plugin scripts with `find /` — 1.6.2 puts the
+  scripts directory in the prompt.
+- Not changed: sessions already open keep their old hooks (hook paths pin at session start), so
+  their ends still only write pointer records; the next fresh SessionStart relaunches those.
+- Open question, not a patch: a fresh miner over a WHOLE transcript (not just the tail) found four
+  durable algos facts that nine in-session sweeps had missed. The drain deliberately mines only the
+  tail; whether a periodic whole-transcript re-mine pays for itself needs a measurement, not a guess.

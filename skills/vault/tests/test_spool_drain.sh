@@ -71,6 +71,7 @@ assert_contains "VAULT_SPOOL_WORKER=1" "$cmd" "drain: the worker is marked so ho
 assert_contains "drain-full" "$cmd" "drain: the worker prompt names the session"
 assert_not_contains "spool-worker" "${cmd%%--- stdin prompt ---*}" "drain: the prompt travels over stdin, not argv (variadic --allowedTools would eat it)"
 assert_contains "--allowedTools" "$cmd" "drain: the worker runs with an explicit tool allowlist"
+assert_contains "rejected-log.sh" "$cmd" "drain: the prompt hands the worker the scripts directory (the first real worker ran find / for it)"
 assert_eq "1" "$(jq -r '.drain_attempts' "$root/spool/drain-full.json")" "drain: the attempt is counted in the spool record"
 assert_contains "spawn" "$(cat "$root/state/hook-events.log")" "drain: the spawn decision is logged"
 

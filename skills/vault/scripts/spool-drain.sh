@@ -106,7 +106,7 @@ tmp=$(mktemp "$state/.spool.XXXXXX") && jq --argjson n "$attempts" '.drain_attem
 prompt=$(cat <<PROMPT
 You are a vault SPOOL WORKER: a headless session mining the unswept tail of a DEAD Claude Code session so its knowledge is not lost. That session (id $sid, cwd $cwd) ended $ended_at without a final capture sweep. You are not that session; you have none of its context beyond the digest below.
 
-1. Load the vault skill with the Skill tool (skill "vault:vault", args "actualize spool-worker") and follow its actualize algorithm in the spool-worker variant.
+1. Load the vault skill with the Skill tool (skill "vault:vault", args "actualize spool-worker") and follow its actualize algorithm in the spool-worker variant. Its scripts live in $self_dir (match.sh, rejected-log.sh, sync.sh, index-regen.py, registry-lint.py) — use that path; do not search the filesystem for them.
 2. Digest of the dead session: $digest — read it in chunks. It has $boundaries sweep boundary line(s) of the form "#### ===== VAULT SWEEP BOUNDARY"; everything ABOVE the last one was already captured by that session. Mine ONLY the part after the last boundary (${tail_bytes} bytes of text). Read earlier parts solely for context the tail refers to.
 3. Apply the salience gate to every candidate; log each rejection with rejected-log.sh; dispatch ONE capture subagent (model sonnet) with the full candidate brief; verify its machine-countable return line and zero removed lines; then sync with sync.sh passing exactly the reported paths.
 4. On success (synced, or a genuine no-delta), delete the spool record: rm -f "$spool_file". On any failure — capture agent error, DIVERGED or REFUSING from sync.sh — leave the record in place and say why.
