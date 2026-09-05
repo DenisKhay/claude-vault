@@ -143,3 +143,8 @@ SessionEnd hook cannot prompt a model, but it can spawn one.
 - Open question, not a patch: a fresh miner over a WHOLE transcript (not just the tail) found four
   durable algos facts that nine in-session sweeps had missed. The drain deliberately mines only the
   tail; whether a periodic whole-transcript re-mine pays for itself needs a measurement, not a guess.
+- Deferred (2026-09-05): `rejected-log.sh` records the session as `unknown` in every row written
+  from a Bash tool call — `CLAUDE_SESSION_ID` is unset there, and the script's third argument is
+  never passed. The audit trail exists to compute a per-session false-negative rate and cannot
+  attribute a single row. Fix candidates: fall back to the `/tmp/vault-*/cwd` marker match that
+  `common.sh` already writes, or have the skill text pass `$PWD`'s subgraph id as the third arg.
