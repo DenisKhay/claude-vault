@@ -118,14 +118,16 @@ PROMPT
 claude_bin=$(command -v claude 2>/dev/null || true)
 [[ -z "$claude_bin" && -x "$HOME/.local/bin/claude" ]] && claude_bin="$HOME/.local/bin/claude"
 
+# The prompt goes over STDIN, never argv: --allowedTools is variadic and swallowed a
+# positional prompt as one more tool name — the first real worker died in three seconds
+# with "Input must be provided either through stdin or as a prompt argument".
 cmd=(env VAULT_SPOOL_WORKER=1 "${claude_bin:-claude}" -p --model "$model" --max-turns 60 --output-format text
-     --allowedTools Bash Read Write Edit Glob Grep Agent Skill mcp__plugin_vault_vault-search__vault_search
-     "$prompt")
+     --allowedTools Bash Read Write Edit Glob Grep Agent Skill mcp__plugin_vault_vault-search__vault_search)
 
 log_event spawn "attempt=$attempts tail=${tail_bytes}B boundaries=$boundaries model=$model dry_run=$dry_run"
 
 if (( dry_run )); then
-  printf '%q ' "${cmd[@]}" > "$state/$sid.log"
+  { printf '%q ' "${cmd[@]}"; printf '\n--- stdin prompt ---\n%s\n' "$prompt"; } > "$state/$sid.log"
   exit 0
 fi
 
@@ -139,7 +141,7 @@ workdir="$cwd"
 cd "$workdir" || exit 0
 echo $$ > "$pidfile"
 _run() { if command -v timeout >/dev/null 2>&1; then timeout 1800 "$@"; else "$@"; fi; }
-_run "${cmd[@]}" > "$state/$sid.log" 2>&1
+printf '%s' "$prompt" | _run "${cmd[@]}" > "$state/$sid.log" 2>&1
 code=$?
 rm -f "$pidfile" 2>/dev/null
 if [[ -f "$spool_file" ]]; then

@@ -69,6 +69,7 @@ cmd=$(cat "$root/state/spool-drain/drain-full.log" 2>/dev/null || true)
 assert_contains "--model sonnet" "$cmd" "drain: the worker runs on sonnet"
 assert_contains "VAULT_SPOOL_WORKER=1" "$cmd" "drain: the worker is marked so hooks do not recurse"
 assert_contains "drain-full" "$cmd" "drain: the worker prompt names the session"
+assert_not_contains "spool-worker" "${cmd%%--- stdin prompt ---*}" "drain: the prompt travels over stdin, not argv (variadic --allowedTools would eat it)"
 assert_contains "--allowedTools" "$cmd" "drain: the worker runs with an explicit tool allowlist"
 assert_eq "1" "$(jq -r '.drain_attempts' "$root/spool/drain-full.json")" "drain: the attempt is counted in the spool record"
 assert_contains "spawn" "$(cat "$root/state/hook-events.log")" "drain: the spawn decision is logged"
