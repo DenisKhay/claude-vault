@@ -107,3 +107,23 @@ resolve at launch. Existing sessions keep running 1.1.1 (or 1.0.5) until restart
 - ~~PreCompact never fired~~ → RETRACTED, not fixed: the claim came from grepping an undocumented,
   version-unstable transcript format. 1.4.0 makes the hook log its own firings instead.
 - ~~rejected.log on tmpfs~~ → SHIPPED: `rejected-log.sh` writes to ~/.claude/vault-state/.
+
+## 1.6.0 — spool auto-drain (2026-09-05)
+
+Five dead-session tails piled up in `~/.claude/vault-spool/` and every SessionStart nagged
+"mine each transcript when convenient" until a live session spent ~25 minutes and four
+subagents on them. Two of the five tails were empty (the sweep's own closing output). The
+SessionEnd hook cannot prompt a model, but it can spawn one.
+
+- [ ] `transcript-digest.py`: render a transcript JSONL to a readable digest, mark every
+      Stop-hook sweep boundary, print `tail_bytes=` for the part after the last boundary
+- [ ] `spool-drain.sh`: detached launcher — render, measure, under the floor → delete the
+      spool + log; else spawn `claude -p --model sonnet` as a spool worker in the dead cwd;
+      attempts counter in the spool record, dry-run mode for tests
+- [ ] `spool-tail.sh` calls the drain after spooling; worker sessions never spool themselves
+- [ ] `prompt-actualize.sh` stays silent for worker sessions (no self-sweep loop)
+- [ ] `inject-context.sh`: worker sessions get no spool listing; normal sessions relaunch
+      stale spools (no live worker, attempts left) and only list what auto-drain gave up on
+- [ ] tests: `test_spool_drain.sh`
+- [ ] SKILL.md spool-worker variant + state-file rows; README + ARCHITECTURE one-liners
+- [ ] bump 1.6.0, run suite, commit, push, reinstall

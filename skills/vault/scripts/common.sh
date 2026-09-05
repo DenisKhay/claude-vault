@@ -81,3 +81,23 @@ vault_git_lock() {
 vault_root() {
   echo "${VAULT_ROOT:-$HOME/Vaults}"
 }
+
+# Durable (non-tmpfs) state: rejected.log, hook-events.log, spool-drain/. Overridable so
+# the test suite never writes into the real audit trail.
+vault_state_dir() {
+  echo "${VAULT_STATE_DIR:-$HOME/.claude/vault-state}"
+}
+
+# Spool of dead-session pointer records (spool-tail.sh writes, spool-drain.sh consumes).
+spool_dir() {
+  echo "${VAULT_SPOOL_DIR:-$HOME/.claude/vault-spool}"
+}
+
+# is_spool_worker
+# Exits 0 inside a headless spool worker (spool-drain.sh sets VAULT_SPOOL_WORKER=1). A
+# worker mines a DEAD session's transcript; its own hooks must never spool it, re-prompt it
+# to sweep itself, or hand it the other pending records — that is the recursion this guard
+# exists to cut.
+is_spool_worker() {
+  [[ "${VAULT_SPOOL_WORKER:-}" == "1" ]]
+}

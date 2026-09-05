@@ -45,6 +45,7 @@ never a crash.
 | `PostToolUse` (`Edit│Write│Bash`) | `tick-and-maybe-prompt.sh` | Counts mutating calls. Every `VAULT_TICK_THRESHOLD` (40), emits a **non-blocking** advisory to optionally actualize — unless one happened within the freshness window. Never blocks. |
 | `PreCompact` | `prompt-actualize.sh --reason=compact` | Requests an actualize sweep before context is compacted. |
 | `Stop` | `prompt-actualize.sh` | Guarantees **one** capture sweep per session (blocks once via exit 2, then lets the session end). |
+| `SessionEnd` | `spool-tail.sh` → `spool-drain.sh` | Writes a pointer record for a session that ends unswept, then launches a detached headless `claude -p` worker (sonnet) that renders the transcript with `transcript-digest.py`, mines only the tail after the last sweep boundary, syncs, and deletes the record. Tails under `VAULT_SPOOL_DRAIN_MIN_TAIL_BYTES` (4 KB of text) are dropped as empty. SessionStart relaunches stale records and lists only those auto-drain gave up on (3 attempts). Worker sessions carry `VAULT_SPOOL_WORKER=1`, which silences their own Stop/SessionEnd hooks. |
 
 Per-session state lives in `/tmp/vault-<session_id>/`: `tick` (counter), `last-actualize`
 (timestamp), `paused` (flag), `cwd` (marker). `/vault-pause` writes `paused`; while present

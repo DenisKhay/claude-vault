@@ -94,20 +94,43 @@ extra_notices() {
   # The listing is capped, but NEVER silently. A truncated list with no count is
   # the same silent-omission bug the entry-bullet budget was fixed for, and here
   # the dropped rows are unswept sessions nobody would ever look for again.
-  local spool="$HOME/.claude/vault-spool" shown=0 total=0 f
+  # A spool worker is itself the drain for one record; handing it the rest would fan out
+  # workers from workers. It gets the subgraph context and nothing about the spool.
+  is_spool_worker && return 0
+  local spool shown=0 total=0 relaunched=0 inflight=0 f
+  spool="$(spool_dir)"
+  local max_attempts="${VAULT_SPOOL_DRAIN_MAX_ATTEMPTS:-3}" retry_after="${VAULT_SPOOL_DRAIN_RETRY_SECONDS:-900}"
+  local pid_dir; pid_dir="$(vault_state_dir)/spool-drain"
   if [[ -d "$spool" ]]; then
     for f in "$spool"/*.json; do
       [[ -e "$f" ]] || break
-      local tp
+      local tp sid attempts age live=0
       tp=$(jq -r '.transcript_path // ""' "$f" 2>/dev/null)
       if [[ -n "$tp" && ! -f "$tp" ]]; then rm -f "$f" 2>/dev/null; continue; fi
+      sid=$(jq -r '.session_id // ""' "$f" 2>/dev/null)
+      attempts=$(jq -r '.drain_attempts // 0' "$f" 2>/dev/null)
+      age=$(( $(date +%s) - $(stat -c %Y "$f" 2>/dev/null || echo 0) ))
+      if [[ -n "$sid" && -f "$pid_dir/$sid.pid" ]] && kill -0 "$(cat "$pid_dir/$sid.pid" 2>/dev/null)" 2>/dev/null; then
+        live=1
+      fi
+      # Auto-drain owns a record until it has used up its attempts: a live worker, or a
+      # young record whose worker has not reported yet, is in flight; a stale one without
+      # a worker (SessionEnd's launch died with the host, or the worker crashed) is relaunched.
+      if (( attempts < max_attempts )); then
+        if (( live == 0 )) && (( age >= retry_after )); then
+          bash "$self_dir/spool-drain.sh" --launch "$f"
+          relaunched=$(( relaunched + 1 ))
+        fi
+        inflight=$(( inflight + 1 ))
+        continue
+      fi
       if (( total == 0 )); then
-        printf '\n⚠ UNSWEPT SESSION TAILS pending (ended without a fresh capture sweep):\n'
+        printf '\n⚠ UNSWEPT SESSION TAILS auto-drain gave up on (%s attempts each — read %s/<sid>.log for why):\n' "$max_attempts" "$pid_dir"
       fi
       total=$(( total + 1 ))
       if (( total <= 5 )); then
         shown=$(( shown + 1 ))
-        printf '  - %s (cwd %s, ended %s)\n' "${tp:-unknown-transcript}" "$(jq -r '.cwd // "?"' "$f" 2>/dev/null)" "$(jq -r '.ended_at // "?"' "$f" 2>/dev/null)"
+        printf '  - %s (cwd %s, ended %s, sid %s)\n' "${tp:-unknown-transcript}" "$(jq -r '.cwd // "?"' "$f" 2>/dev/null)" "$(jq -r '.ended_at // "?"' "$f" 2>/dev/null)" "$sid"
       fi
     done
     if (( total > shown )); then
@@ -115,6 +138,9 @@ extra_notices() {
     fi
     if (( total > 0 )); then
       printf 'When convenient: mine each transcript for vault candidates (actualize rules apply), then delete its spool file from %s/.\n' "$spool"
+    fi
+    if (( inflight > 0 )); then
+      printf '\nℹ Vault auto-drain: %d dead-session tail(s) in flight with background workers (%d relaunched just now). Nothing for you to do; a record only surfaces here once auto-drain gives up on it.\n' "$inflight" "$relaunched"
     fi
   fi
 }

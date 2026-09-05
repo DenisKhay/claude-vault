@@ -26,6 +26,10 @@ if is_paused "$HOOK_SESSION_ID"; then
   exit 0
 fi
 
+# A spool worker's whole session IS a sweep of someone else's tail; prompting it to
+# sweep itself would loop it. Silent allow.
+is_spool_worker && exit 0
+
 actualize_file="/tmp/vault-${HOOK_SESSION_ID}/last-actualize"
 
 case "$HOOK_EVENT" in

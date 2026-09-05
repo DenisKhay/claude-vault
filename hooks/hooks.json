@@ -1,5 +1,5 @@
 {
-  "description": "Vault capture/recall lifecycle: inject the matched subgraph on SessionStart (plus a background ff-only pull and divergence/unswept-tail notices); prompt a capture sweep on Stop whenever the last sweep is missing or older than 30 minutes (age-based re-arm — the old first-sweep-only gate lost every session tail); PreCompact invalidates a stale sentinel without ever blocking; SessionEnd spools a pointer record for sessions that die unswept so the next session can mine their transcripts.",
+  "description": "Vault capture/recall lifecycle: inject the matched subgraph on SessionStart (plus a background ff-only pull and divergence/unswept-tail notices); prompt a capture sweep on Stop whenever the last sweep is missing or older than 30 minutes (age-based re-arm — the old first-sweep-only gate lost every session tail); PreCompact invalidates a stale sentinel without ever blocking; SessionEnd spools a pointer record for sessions that die unswept and launches a detached headless worker (spool-drain.sh) to mine the unswept tail; SessionStart relaunches stale records and lists only the ones auto-drain gave up on.",
   "hooks": {
     "SessionStart": [
       {

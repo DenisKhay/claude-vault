@@ -67,6 +67,12 @@ Triggered by the Stop hook (which re-arms whenever the sentinel is older than `V
 ### Empty-delta short-circuit
 If after scanning you have no candidates (e.g. trivial typo session), still touch the timestamp file and print "no knowledge delta — nothing to capture this turn" so the Stop hook lets the session exit cleanly. Do not create empty nodes. (With the age-based Stop gate, a long quiet session re-prompts every ~30 min; the short-circuit costs one line each time and keeps the gate honest.)
 
+### Spool-worker variant (`actualize spool-worker`)
+A headless session spawned by `scripts/spool-drain.sh` for ONE dead session's record (`VAULT_SPOOL_WORKER=1` in its environment; the launch prompt names the record, the digest and the byte count of the unswept tail). Same algorithm, three differences:
+- **The session context is a digest, not memory.** Read the digest the prompt names; only the part after the LAST `#### ===== VAULT SWEEP BOUNDARY` line is unswept — everything above it was captured by that session's own sweeps. Mine the tail; read earlier parts only for context the tail refers to. Identity comes from the record's `cwd` (the worker is launched there, so SessionStart already injected the right subgraph).
+- **The record is the receipt.** After a clean sync (or a genuine no-delta) `rm` the spool record the prompt names. On a capture-agent error, a DIVERGED or REFUSING sync, leave it: `spool-drain.sh` counts attempts in the record and SessionStart relaunches stale ones until `VAULT_SPOOL_DRAIN_MAX_ATTEMPTS` (3), after which the record is listed for a live session.
+- **No timestamp, no self-sweep.** The worker's own Stop/SessionEnd hooks are silenced by the env flag; do not touch `last-actualize`, never mine other records, never re-add ssh keys or resolve divergence.
+
 ## Mode: enroll
 
 Triggered when init reported MISS and the user wants to do knowledge work, or when `/vault-enroll` is run.
@@ -111,7 +117,8 @@ The skill (and the hook scripts that invoke it) use these per-session state file
 | `last-actualize` | this skill (actualize mode) | Timestamp of the last sweep; Stop re-prompts when it is missing OR older than `VAULT_ACTUALIZE_FRESHNESS_SECONDS` (default 1800) |
 | `~/.claude/vault-state/rejected.log` | `rejected-log.sh` (actualize mode) | One row per salience-gate rejection — the gate's false-negative audit trail. Deliberately NOT under `/tmp`: tmpfs wiped it at every reboot, so the rate it exists to measure was never computable across more than one uptime |
 | `/tmp/vault-pause-<cwdhash>` | `/vault-pause` slash command | When present, hooks no-op for every session in that cwd (cwd-keyed: slash-command shells don't know the session id; hooks do know their cwd) |
-| `~/.claude/vault-spool/<sid>.json` | `spool-tail.sh` (SessionEnd hook) | Pointer to a session that ended unswept; listed at every SessionStart until mined + deleted |
+| `~/.claude/vault-spool/<sid>.json` | `spool-tail.sh` (SessionEnd hook) | Pointer to a session that ended unswept, with a `drain_attempts` counter. Consumed by `spool-drain.sh`; listed at SessionStart only once auto-drain has given up on it |
+| `~/.claude/vault-state/spool-drain/<sid>.{digest.md,log,pid}` | `spool-drain.sh` | The dead session's rendered digest (`transcript-digest.py`), the worker's output, and its pid while running. Decisions (tail-empty, spawn, max-attempts, worker-exit) go to `~/.claude/vault-state/hook-events.log` |
 
 ## Slash commands
 

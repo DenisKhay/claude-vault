@@ -1,6 +1,6 @@
 {
   "name": "vault",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "A single global knowledge graph for Claude Code: identity-routed subgraphs, hybrid BM25 + embedding search (MCP), and hook-enforced capture so durable project knowledge survives across sessions.",
   "author": {
     "name": "Denis Khaydarshin",

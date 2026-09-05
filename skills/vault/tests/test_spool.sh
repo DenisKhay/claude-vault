@@ -35,12 +35,14 @@ got=$(_spool_run "spooltest-none" "")
 assert_eq "spooled" "$got" "C5: a session that never swept is always spooled"
 
 # --- C5: the listing never drops tails silently -------------------------------
+# Since 1.6.0 a record with drain attempts left belongs to auto-drain and is not listed;
+# the cap is exercised on records auto-drain gave up on (attempts exhausted).
 spool_dir="$HOME/.claude/vault-spool"
 mkdir -p "$spool_dir"
 tp="/tmp/vault-spool-listing-test.jsonl"; : > "$tp"
 for i in 1 2 3 4 5 6 7 8; do
   jq -nc --arg sid "listtest-$i" --arg tp "$tp" \
-     '{session_id:$sid, cwd:"/x", transcript_path:$tp, ended_at:"2026-08-30T00:00:00+03:00"}' \
+     '{session_id:$sid, cwd:"/x", transcript_path:$tp, ended_at:"2026-08-30T00:00:00+03:00", drain_attempts:3}' \
      > "$spool_dir/zz-listtest-$i.json"
 done
 out=$(VAULT_ROOT="$(mktemp -d)" bash -c '

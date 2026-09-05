@@ -23,6 +23,9 @@ if is_paused "$HOOK_SESSION_ID"; then
   exit 0
 fi
 
+# A spool worker mines a dead session; its own tail is that work, never a record.
+is_spool_worker && exit 0
+
 [[ -z "$HOOK_SESSION_ID" ]] && exit 0
 
 actualize_file="/tmp/vault-${HOOK_SESSION_ID}/last-actualize"
@@ -43,10 +46,13 @@ transcript=$(echo "$HOOK_INPUT_RAW" | jq -r '.transcript_path // ""' 2>/dev/null
 # A session that never produced a transcript (or a sub-second one) has no tail worth mining.
 [[ -n "$transcript" && ! -f "$transcript" ]] && exit 0
 
-spool="$HOME/.claude/vault-spool"
+spool="$(spool_dir)"
 mkdir -p "$spool" 2>/dev/null || exit 0
 jq -n --arg sid "$HOOK_SESSION_ID" --arg cwd "$HOOK_CWD" \
       --arg tp "$transcript" --arg ts "$(date -Is)" \
-      '{session_id:$sid, cwd:$cwd, transcript_path:$tp, ended_at:$ts}' \
+      '{session_id:$sid, cwd:$cwd, transcript_path:$tp, ended_at:$ts, drain_attempts:0}' \
       > "$spool/${HOOK_SESSION_ID}.json" 2>/dev/null || true
+
+# The record is insurance; the drain is the actual capture. Detached, returns at once.
+[[ -f "$spool/${HOOK_SESSION_ID}.json" ]] && bash "$self_dir/spool-drain.sh" --launch "$spool/${HOOK_SESSION_ID}.json"
 exit 0

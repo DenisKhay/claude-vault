@@ -39,6 +39,7 @@ repo cwd ──match.sh──▶ subgraph id(s)        ~/Vaults/
   vault_search MCP  ◀── recall on demand            ├── architecture/ patterns/
         │                                           └── domain/ dependencies/
   Stop / PreCompact hook ──▶ actualize sweep ──▶ new / updated nodes
+  SessionEnd hook ──▶ spool record ──▶ headless `claude -p` worker mines the unswept tail
 ```
 
 Full details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
