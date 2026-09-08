@@ -4,33 +4,45 @@
 # machinery: the audit found 13 commits ever, a 73-day gap, and a 22h uncommitted
 # window observed live.
 #
-# Flow: stage → commit (if anything) → pull --rebase (linear, no merge commits)
-#       → push. flock-serialized against the SessionStart background pull.
+# Flow: refuse-if-inflight → branch guard → secret scan → stage (declared paths) →
+#       commit → FETCH → compare HEAD vs origin/<branch> → push (ahead) /
+#       rebase-then-push (behind, clean tree) / defer (behind, dirty tree) /
+#       DIVERGED (real conflict). flock-serialized against the SessionStart pull.
 #
 # Conflict policy is LOUD-DUMB by design (multi-machine research 2026-08-30):
-# never auto-merge — on rebase conflict, abort, restore the local commit, write
-# the .sync-diverged marker (surfaced at every SessionStart), print loudly, exit 2.
-# Network failure is fail-open: commit stands locally, push retries next sweep.
+# never auto-merge — on a genuine rebase conflict, abort, restore the local commit,
+# write the .sync-diverged marker (surfaced at every SessionStart), exit 2.
+# Network/auth failure is fail-open: the commit stands locally and every non-success
+# remote line carries unpushed=N (the count is the robust signal — an auth failure
+# and a dead network print the same words, so the number, not the words, is trusted).
 #
 # Usage: sync.sh ["commit message"] [path ...]
 #
-# Three defects the 2026-08-30 re-audit reproduced, and what now prevents them:
-#  1. SEVERE — an unguarded `git add -A` + commit fired during a human's rebase or
-#     merge either destroyed the sweep (the unconditional `rebase --abort` discarded
-#     the commit and deleted the node) or CONCLUDED the merge, committing conflict
-#     markers into node files that the next SessionStart feeds to an LLM as prose.
-#     Now: refuse before touching the index whenever any git operation is in flight.
-#  2. `git add -A` staged whatever OTHER live sessions had written, so a sweep's
-#     removed-lines certification covered files it never opened. Now: stage only the
-#     paths the caller declares; -A is the explicit no-args fallback.
-#  3. Network/auth failure was reported as DIVERGED — the marker got committed and
-#     would make every fresh clone boot permanently diverged. Now: divergence is
-#     claimed only when the remote is reachable AND the rebase genuinely conflicts.
+# Defects prevented (2026-08-30 re-audit + 2026-09-08 audit III):
+#  1. SEVERE — a sweep during a human's rebase/merge destroyed the sweep or committed
+#     conflict markers. Now: refuse before touching the index if any op is in flight.
+#  2. `git add -A` swept in OTHER live sessions' files. Now: stage only declared paths.
+#  3. Network/auth failure was reported as DIVERGED. Now: divergence is claimed only
+#     after a successful FETCH shows the branches genuinely conflict on a clean tree.
+#  4. DIRTY-TREE FALSE DIVERGED (audit III, high) — `git pull --rebase` refused before
+#     fetching whenever another session had an unstaged tracked edit, and that refusal
+#     was mislabelled DIVERGED. Both live DIVERGEDs were this. Now: fetch first; when
+#     merely AHEAD, push without rebasing (a dirty tree never blocks a push); when
+#     BEHIND with a dirty tree, defer (fail-open) rather than touch another session's
+#     files; rebase only a clean tree, and only a real rebase conflict marks DIVERGED.
+#  5. BAD PATHSPEC SILENT SUCCESS (audit III, regression) — a declared path that
+#     matched nothing left `git add` failing under `2>/dev/null`, nothing staged, and
+#     the run still printed "pushed OK". Now: a failed stage exits 2 naming the path.
+#  6. NO BRANCH GUARD (audit III) — a detached HEAD or a committed-off-branch sweep
+#     misreported forever. Now: refuse a detached HEAD before staging.
+#  7. NO GIT IDENTITY (audit III, cold start) — an empty HOME made the commit fail and
+#     left the sweep staged. Now: a `-c user.name/email=vault@<host>` fallback commits.
 
 set -uo pipefail
 
 VROOT="${VAULT_ROOT:-$HOME/Vaults}"
-MSG="${1:-vault: capture sweep $(date +%F) [$(hostname -s 2>/dev/null || echo host)]}"
+HOST="$(hostname -s 2>/dev/null || echo host)"
+MSG="${1:-vault: capture sweep $(date +%F) [$HOST]}"
 shift 2>/dev/null || true
 PATHS=("$@")
 
@@ -41,9 +53,18 @@ export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -oBatchMode=yes -oConnectTimeout=
 [[ -d "$VROOT/.git" ]] || { echo "sync.sh: $VROOT is not a git repo — nothing to sync"; exit 0; }
 command -v git >/dev/null 2>&1 || { echo "sync.sh: git not found"; exit 0; }
 
-sync_common="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
-[[ -f "$sync_common" ]] && source "$sync_common"
+[[ -f "$self_dir/common.sh" ]] && source "$self_dir/common.sh"
+
+# Durable one-line trail per outcome (audit III: sync wrote no on-disk row for any
+# result, so a lying "pushed OK" left nothing to contradict it after the fact).
+slog() {
+  local dir
+  if declare -f vault_state_dir >/dev/null 2>&1; then dir="$(vault_state_dir)"; else dir="$HOME/.claude/vault-state"; fi
+  mkdir -p "$dir" 2>/dev/null && printf '%s\t%s\t%s\n' "$(date -Is 2>/dev/null || date)" "$HOST" "$1" >> "$dir/sync.log" 2>/dev/null || true
+}
+
 if declare -f vault_git_lock >/dev/null 2>&1; then
   LOCKFILE="$(vault_git_lock "$VROOT")"
 else
@@ -55,11 +76,6 @@ flock -w 30 9 || { echo "sync.sh: could not take the vault git lock (another syn
 cd "$VROOT" || exit 1
 
 # --- Refuse while any git operation is in flight -------------------------------
-# Staging here would either be discarded by the abort below or would mark the
-# human's conflicts resolved and commit the markers. Neither is recoverable from
-# anything but the reflog, and both present as success. Reachable on ONE machine:
-# an abandoned `git rebase -i` is enough, because `git pull --rebase` then fails
-# merely because a rebase directory exists.
 inflight=""
 [[ -d .git/rebase-merge || -d .git/rebase-apply ]] && inflight="a rebase"
 git rev-parse --verify -q MERGE_HEAD >/dev/null 2>&1 && inflight="a merge"
@@ -69,15 +85,26 @@ if [[ -n "$inflight" ]]; then
   echo "sync.sh: ⚠ REFUSING — $inflight is in progress in $VROOT."
   echo "sync.sh: the sweep is NOT committed and nothing was staged; your files are untouched on disk."
   echo "sync.sh: finish or abort that operation by hand, then re-run the sweep."
+  slog "REFUSED inflight=$inflight"
+  exit 2
+fi
+
+# --- Branch guard (audit III: sync-no-branch-guard) ----------------------------
+# A commit on a detached HEAD is orphaned the moment HEAD moves, and every later
+# fetch/rebase compares against the wrong ref. Refuse before staging so the node
+# stays on disk for a human to place on a real branch.
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null)" || branch=""
+if [[ -z "$branch" ]]; then
+  echo "sync.sh: ⚠ REFUSING — $VROOT is on a detached HEAD, not a branch."
+  echo "sync.sh: nothing was staged or committed; your sweep is untouched on disk."
+  echo "sync.sh: check out the store's branch (e.g. \`git -C $VROOT checkout main\`), then re-run."
+  slog "REFUSED detached-head"
   exit 2
 fi
 
 # --- Credential guard (locked decision D6) ------------------------------------
 # Scanned BEFORE staging, so a refusal leaves the index exactly as it was found.
-# Auto-push means an accidentally captured token reaches a remote — permanently,
-# in history — within seconds of being written, with no human in the loop.
-scan_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -x "$scan_self_dir/secret-scan.sh" || -f "$scan_self_dir/secret-scan.sh" ]]; then
+if [[ -x "$self_dir/secret-scan.sh" || -f "$self_dir/secret-scan.sh" ]]; then
   if (( ${#PATHS[@]} )); then
     candidates=("${PATHS[@]}")
   else
@@ -85,24 +112,43 @@ if [[ -x "$scan_self_dir/secret-scan.sh" || -f "$scan_self_dir/secret-scan.sh" ]
                                  git ls-files --others --exclude-standard 2>/dev/null; } | sort -u )
   fi
   if (( ${#candidates[@]} )); then
-    if ! scan_out=$(bash "$scan_self_dir/secret-scan.sh" "${candidates[@]}" 2>&1); then
+    if ! scan_out=$(bash "$self_dir/secret-scan.sh" "${candidates[@]}" 2>&1); then
       echo "sync.sh: ⚠ REFUSING — the sweep carries what looks like a credential."
       printf '%s\n' "$scan_out"
       echo "sync.sh: nothing was staged or committed; your files are untouched on disk."
+      slog "REFUSED secret-scan"
       exit 2
     fi
   fi
 fi
 
+# --- Stage (declared paths only; a bad pathspec is loud, never silent) ---------
 if (( ${#PATHS[@]} )); then
-  git add -- "${PATHS[@]}" 2>/dev/null
+  if ! add_err="$(git add -- "${PATHS[@]}" 2>&1)"; then
+    echo "sync.sh: ⚠ REFUSING — a declared path did not match anything in $VROOT:"
+    printf '%s\n' "$add_err"
+    echo "sync.sh: nothing was committed; your files are untouched on disk."
+    slog "REFUSED bad-pathspec"
+    exit 2
+  fi
 else
   git add -A 2>/dev/null
 fi
+
 # The divergence marker is local operator state, never store content.
 git reset -q -- .sync-diverged 2>/dev/null
+
+# --- Commit (with a git-identity fallback for a bare HOME) ---------------------
+idargs=()
+if ! git config user.email >/dev/null 2>&1 || ! git config user.name >/dev/null 2>&1; then
+  idargs=(-c "user.name=vault" -c "user.email=vault@${HOST}")
+fi
 if ! git diff --cached --quiet 2>/dev/null; then
-  git commit -q -m "$MSG" || { echo "sync.sh: COMMIT FAILED — sweep output is UNCOMMITTED in $VROOT"; exit 2; }
+  if ! git ${idargs[@]+"${idargs[@]}"} commit -q -m "$MSG"; then
+    echo "sync.sh: COMMIT FAILED — sweep output is UNCOMMITTED in $VROOT"
+    slog "COMMIT-FAILED"
+    exit 2
+  fi
   committed=1
 else
   committed=0
@@ -110,33 +156,87 @@ fi
 
 if ! git remote get-url origin >/dev/null 2>&1; then
   echo "sync.sh: committed=$committed, no remote configured — local only"
+  slog "LOCAL-ONLY committed=$committed no-remote"
   exit 0
 fi
 
-if ! git pull --rebase --quiet 2>/dev/null; then
-  # A failed pull is not evidence of divergence: an unreachable remote, a dead
-  # network or an expired credential fails identically. Claiming DIVERGED there
-  # writes a marker that gets committed and makes every future clone boot into a
-  # false alarm — poisoning the one channel the loud-stop policy depends on.
-  if ! git ls-remote --exit-code origin >/dev/null 2>&1; then
-    # Any rebase this pull started is ours to clean up; a pre-existing one was
-    # refused above, so this can never abort the human's work.
-    [[ -d .git/rebase-merge || -d .git/rebase-apply ]] && git rebase --abort 2>/dev/null
-    echo "sync.sh: committed=$committed, remote unreachable (network/auth) — local only, retries next sweep"
-    exit 0
-  fi
-  [[ -d .git/rebase-merge || -d .git/rebase-apply ]] && git rebase --abort 2>/dev/null
-  touch "$VROOT/.sync-diverged" 2>/dev/null
-  echo "sync.sh: ⚠ DIVERGED — local sweep is committed but remote does not fast-forward/rebase cleanly."
-  echo "sync.sh: NOT auto-merging (an LLM reads this store; silent bad merges become its context)."
-  echo "sync.sh: resolve by hand in $VROOT, push, then: rm $VROOT/.sync-diverged"
-  exit 2
-fi
-rm -f "$VROOT/.sync-diverged" 2>/dev/null
+# Commits on HEAD not yet on the remote-tracking ref — the count is the honest
+# signal on every non-success line below.
+unpushed() { git rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo '?'; }
 
-if git push --quiet 2>/dev/null; then
-  echo "sync.sh: committed=$committed, rebased on origin, pushed OK"
-else
-  echo "sync.sh: committed=$committed, push FAILED (network?) — will retry on the next sweep"
+# --- FETCH first: an exit code is not a verdict; the compared refs are ----------
+if ! git fetch --quiet origin "$branch" 2>/dev/null; then
+  # A failed fetch is a dead network OR a bad credential — indistinguishable by
+  # message (DNS failures also say "Permission denied"), so classify best-effort
+  # and let unpushed=N be authoritative.
+  cls="network/auth"
+  if git ls-remote --exit-code origin >/dev/null 2>&1; then cls="fetch failed but remote is reachable"; fi
+  echo "sync.sh: committed=$committed, remote unreachable ($cls) — local only, unpushed=$(unpushed), retries next sweep"
+  slog "OFFLINE committed=$committed unpushed=$(unpushed) $cls"
+  exit 0
 fi
-exit 0
+
+# origin/$branch may not exist yet (first push of a new branch).
+if ! git rev-parse --verify -q "origin/$branch" >/dev/null 2>&1; then
+  if git push --quiet -u origin "$branch" 2>/dev/null; then
+    rm -f "$VROOT/.sync-diverged" 2>/dev/null
+    echo "sync.sh: committed=$committed, pushed OK (new branch origin/$branch)"
+    slog "PUSHED-NEW committed=$committed branch=$branch"
+  else
+    echo "sync.sh: committed=$committed, push FAILED (network?) — unpushed=$(git rev-list --count HEAD 2>/dev/null || echo '?'), retries next sweep"
+    slog "PUSH-FAILED-NEW committed=$committed"
+  fi
+  exit 0
+fi
+
+behind="$(git rev-list --count "HEAD..origin/$branch" 2>/dev/null || echo 0)"
+ahead="$(git rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo 0)"
+
+do_push() {
+  if git push --quiet origin "$branch" 2>/dev/null; then
+    rm -f "$VROOT/.sync-diverged" 2>/dev/null
+    echo "sync.sh: committed=$committed, ${1:-in sync with origin}, pushed OK"
+    slog "PUSHED committed=$committed ahead=$ahead behind=$behind"
+    return 0
+  fi
+  # A rejected push means the remote moved between our fetch and our push — a race,
+  # not divergence. Leave the commit; the next sweep re-fetches and integrates.
+  echo "sync.sh: committed=$committed, push FAILED (remote moved or network?) — unpushed=$(unpushed), retries next sweep"
+  slog "PUSH-FAILED committed=$committed unpushed=$(unpushed)"
+  return 0
+}
+
+if (( behind == 0 )); then
+  rm -f "$VROOT/.sync-diverged" 2>/dev/null
+  if (( ahead > 0 )); then
+    do_push "ahead $ahead"
+  else
+    echo "sync.sh: committed=$committed, already in sync with origin/$branch — nothing to push"
+    slog "IN-SYNC committed=$committed"
+  fi
+  exit 0
+fi
+
+# behind>0: the remote has commits we lack. Integrating means moving the working
+# tree, which git refuses (and must, per C2) while another session has unstaged
+# edits. Defer rather than stash/clobber their work.
+if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+  echo "sync.sh: committed=$committed, behind origin by $behind but the tree is busy (another session is writing) — local only, unpushed=$ahead, integrate next sweep"
+  slog "DEFERRED-DIRTY committed=$committed behind=$behind unpushed=$ahead"
+  exit 0
+fi
+
+# Clean tree + behind: rebase our commits onto the remote. Only a real content
+# conflict here is DIVERGED.
+if git rebase --quiet "origin/$branch" 2>/dev/null; then
+  ahead="$(git rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo 0)"
+  do_push "rebased on origin"
+  exit 0
+fi
+[[ -d .git/rebase-merge || -d .git/rebase-apply ]] && git rebase --abort 2>/dev/null
+touch "$VROOT/.sync-diverged" 2>/dev/null
+echo "sync.sh: ⚠ DIVERGED — local sweep is committed but rebase onto origin/$branch conflicts."
+echo "sync.sh: NOT auto-merging (an LLM reads this store; silent bad merges become its context)."
+echo "sync.sh: resolve by hand in $VROOT, push, then: rm $VROOT/.sync-diverged"
+slog "DIVERGED committed=$committed behind=$behind ahead=$ahead"
+exit 2

@@ -148,3 +148,28 @@ SessionEnd hook cannot prompt a model, but it can spawn one.
   never passed. The audit trail exists to compute a per-session false-negative rate and cannot
   attribute a single row. Fix candidates: fall back to the `/tmp/vault-*/cwd` marker match that
   `common.sh` already writes, or have the skill text pass `$PWD`'s subgraph id as the third arg.
+
+## 1.6.3 — sync.sh fetch-first (audit III, 2026-09-08)
+
+Audit III (48 findings) flagged five sync.sh defects; this rewrite fixes them together, TDD
+(5 new test groups C9–C13, suite 177→192 green).
+
+- [x] **dirty-tree-false-diverged (high)** — `git pull --rebase` refused before fetching on any
+      unstaged tracked edit from another session, then mislabelled it DIVERGED (both live
+      DIVERGEDs were this). Now fetch-first: merely AHEAD → push (a dirty tree never blocks a
+      push); BEHIND + dirty → defer (fail-open); rebase only a clean tree; only a real rebase
+      conflict marks DIVERGED.
+- [x] **sync-bad-pathspec-silent-no-log (regression of C2)** — a declared path matching nothing
+      left `git add` failing under `2>/dev/null`, nothing staged, and still printed "pushed OK".
+      Now a failed stage exits 2 naming the path.
+- [x] **sync-no-branch-guard** — a detached HEAD is refused before staging (node stays on disk).
+- [x] **auth-failure-indistinguishable** — every non-success remote line now carries `unpushed=N`;
+      the count is authoritative (auth vs network wording is best-effort only).
+- [x] **sync-no-git-identity** — a bare HOME gets a `-c user.name/email=vault@<host>` fallback so
+      the first miku sweep commits instead of dying and leaving the sweep staged.
+- [x] durable `sync.log` row per outcome (was: no on-disk record of any result).
+- [x] bump 1.6.3, suite green, commit, push, `claude plugin update`.
+
+Not in this change (audit III, separate): inject-context.sh diverged-marker lifecycle + both-way
+ancestor test; the derived-`_index.md` conflict auto-resolve; registry `~/` path prefixes;
+headless `claude -p` capture guard. These are the rest of the multimachine minimum-change list.

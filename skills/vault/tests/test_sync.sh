@@ -79,3 +79,66 @@ assert_exit "2" "$ec" "C3b: real divergence exits 2"
 [[ -f "$tmp/A/.sync-diverged" ]] && got=marked || got=clean
 assert_eq "marked" "$got" "C3b: real divergence against a reachable remote still marks loudly"
 rm -rf "$tmp"
+
+# --- C9: dirty tree while AHEAD-only is not divergence (audit: dirty-tree-false-diverged) ------
+# Another live session's unstaged edit to a tracked file must not turn our push into a false DIVERGED.
+tmp="$(mktemp -d)"
+_sync_fixture "$tmp"
+git -C "$tmp/A" reset -q --hard origin/main          # in sync with origin
+printf 'someone else is mid-edit\n' >> "$tmp/A/sg/_index.md"   # unstaged, tracked (another session)
+printf 'my new node\n' > "$tmp/A/sg/mine.md"
+out=$(VAULT_ROOT="$tmp/A" bash "$SYNC" "ahead with a dirty tree" "sg/mine.md" 2>&1) && ec=$? || ec=$?
+assert_exit "0" "$ec" "C9: ahead-only with a dirty tree succeeds (no false DIVERGED)"
+[[ -f "$tmp/A/.sync-diverged" ]] && got=marked || got=clean
+assert_eq "clean" "$got" "C9: a dirty tree while merely ahead writes NO divergence marker"
+assert_contains "pushed OK" "$out" "C9: the sweep pushes despite the unstaged tracked edit"
+if git -C "$tmp/A" show --name-only --format= HEAD | grep -q '_index.md'; then got=swept; else got=untouched; fi
+assert_eq "untouched" "$got" "C9: the other session's unstaged edit is not committed"
+rm -rf "$tmp"
+
+# --- C10: a pathspec that matches nothing must fail loudly, never report success --------------
+tmp="$(mktemp -d)"
+_sync_fixture "$tmp"
+git -C "$tmp/A" reset -q --hard origin/main
+out=$(VAULT_ROOT="$tmp/A" bash "$SYNC" "bad pathspec" "sg/does-not-exist.md" 2>&1) && ec=$? || ec=$?
+assert_exit "2" "$ec" "C10: a non-matching declared path exits non-zero"
+assert_not_contains "pushed OK" "$out" "C10: a bad pathspec never prints 'pushed OK'"
+assert_contains "does-not-exist.md" "$out" "C10: the failure names the offending path"
+rm -rf "$tmp"
+
+# --- C11: a detached HEAD is refused before staging (audit: sync-no-branch-guard) -------------
+tmp="$(mktemp -d)"
+_sync_fixture "$tmp"
+git -C "$tmp/A" reset -q --hard origin/main
+git -C "$tmp/A" checkout -q --detach
+printf 'node written on a detached head\n' > "$tmp/A/sg/detached.md"
+out=$(VAULT_ROOT="$tmp/A" bash "$SYNC" "detached sweep" "sg/detached.md" 2>&1) && ec=$? || ec=$?
+assert_exit "2" "$ec" "C11: a detached HEAD is refused (exit 2)"
+assert_contains "detached" "$out" "C11: the refusal names the detached HEAD"
+[[ -f "$tmp/A/sg/detached.md" ]] && got=present || got=GONE
+assert_eq "present" "$got" "C11: the node survives the refusal"
+rm -rf "$tmp"
+
+# --- C12: commit works with no configured git identity (audit: sync-no-git-identity) ----------
+tmp="$(mktemp -d)"
+_sync_fixture "$tmp"
+git -C "$tmp/A" reset -q --hard origin/main
+git -C "$tmp/A" config --unset user.email; git -C "$tmp/A" config --unset user.name
+printf 'node with no identity configured\n' > "$tmp/A/sg/noid.md"
+out=$(HOME="$tmp/nohome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      VAULT_ROOT="$tmp/A" bash "$SYNC" "no-identity sweep" "sg/noid.md" 2>&1) && ec=$? || ec=$?
+assert_contains "committed=1" "$out" "C12: the sweep commits even with no git identity configured"
+who=$(git -C "$tmp/A" log -1 --format='%an' 2>/dev/null)
+[[ -n "$who" ]] && got=named || got=empty
+assert_eq "named" "$got" "C12: the commit has an author (identity fallback supplied one)"
+rm -rf "$tmp"
+
+# --- C13: every non-success remote line carries an unpushed count -----------------------------
+tmp="$(mktemp -d)"
+_sync_fixture "$tmp"
+git -C "$tmp/A" reset -q --hard origin/main
+git -C "$tmp/A" remote set-url origin "$tmp/does-not-exist.git"
+printf 'offline node\n' > "$tmp/A/sg/offline2.md"
+out=$(VAULT_ROOT="$tmp/A" bash "$SYNC" "offline with count" "sg/offline2.md" 2>&1) && ec=$? || ec=$?
+assert_contains "unpushed=1" "$out" "C13: an unreachable remote reports unpushed=1 (the robust signal)"
+rm -rf "$tmp"
