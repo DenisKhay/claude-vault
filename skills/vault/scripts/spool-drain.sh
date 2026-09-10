@@ -73,6 +73,17 @@ if [[ -z "$transcript" || ! -f "$transcript" ]]; then
   exit 0
 fi
 
+# A record the Stop hook wrote as crash insurance belongs to a RUNNING session until that session ends
+# or dies. Never mine a live transcript: it is still growing, and the session may sweep it itself.
+# A dead pid on a live record is the crash case — exactly what the insurance is for — so it proceeds.
+rec_live=$(jq -r '.live // false' "$spool_file" 2>/dev/null)
+rec_pid=$(jq -r '.pid // ""' "$spool_file" 2>/dev/null)
+if [[ "$rec_live" == "true" ]] && declare -f session_is_live >/dev/null 2>&1 && session_is_live "$rec_pid"; then
+  log_event session-live "pid=$rec_pid — record kept, not mined"
+  exit 0
+fi
+[[ "$rec_live" == "true" ]] && log_event crashed-session "pid=${rec_pid:-none} dead — mining as ended"
+
 if (( attempts >= max_attempts )); then
   log_event max-attempts "attempts=$attempts — left for a live session"
   exit 0
@@ -141,7 +152,8 @@ workdir="$cwd"
 cd "$workdir" || exit 0
 echo $$ > "$pidfile"
 _run() { if command -v timeout >/dev/null 2>&1; then timeout 1800 "$@"; else "$@"; fi; }
-printf '%s' "$prompt" | _run "${cmd[@]}" > "$state/$sid.log" 2>&1
+printf '\n===== attempt %s @ %s (pid %s) =====\n' "$attempts" "$(date -Is)" "$$" >> "$state/$sid.log" 2>/dev/null
+printf '%s' "$prompt" | _run env -u WEZTERM_PANE "${cmd[@]}" >> "$state/$sid.log" 2>&1
 code=$?
 rm -f "$pidfile" 2>/dev/null
 if [[ -f "$spool_file" ]]; then

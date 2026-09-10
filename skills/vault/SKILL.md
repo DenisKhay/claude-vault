@@ -19,9 +19,9 @@ Behavior:
 
 ## Mode: actualize
 
-Triggered by the Stop hook (which re-arms whenever the sentinel is older than `VAULT_ACTUALIZE_FRESHNESS_SECONDS`, default 1800) or `/vault-update`. Sweeps everything Claude has learned this session into the matched subgraph as new or updated nodes. PreCompact never triggers a sweep — it invalidates the sentinel so the next Stop does. There is no PostToolUse trigger; the mid-session counter was removed in 1.1.0.
+Triggered by `/vault-update`, by the SessionEnd spool worker (the 1.7.0 DEFAULT: the Stop hook is silent and only refreshes crash insurance — a spool record marked live with the session's claude pid — so capture happens after the session ends, off the human's critical path; the worker runs the `spool-worker` variant below on the whole unswept tail), or by the legacy in-session nag when `VAULT_STOP_CAPTURE=1` (re-arms whenever the sentinel is older than `VAULT_ACTUALIZE_FRESHNESS_SECONDS`, default 1800). Sweeps everything Claude has learned this session into the matched subgraph as new or updated nodes. PreCompact never triggers a sweep — it invalidates the sentinel so the next Stop does. There is no PostToolUse trigger; the mid-session counter was removed in 1.1.0.
 
-**Two-phase, so the main transcript stays clean:** the MAIN agent only decides *what* is worth capturing (steps 1–4 — it's the only one holding the session context) and composes a candidate brief; ALL vault file I/O (dedup search, node reads/writes, index updates) runs inside ONE dispatched subagent (step 5), which renders as a single collapsed row. Never do vault file I/O inline in the main conversation — that litter is exactly what this structure removes.
+**Two-phase, so the main transcript stays clean:** the MAIN agent only decides *what* is worth capturing (steps 1–4 — it's the only one holding the session context) and composes a candidate brief; ALL vault file I/O (dedup search, node reads/writes, index updates) runs inside ONE dispatched subagent (step 5), which renders as a single collapsed row. **Two exceptions (1.7.0, cost):** (a) a SMALL delta — at most two candidates, each an append or supersede of ≤ ~15 lines to an EXISTING node, no new node, no `entry:` change — is done INLINE by the main agent (dedup grep, edit, sync); a subagent spawn costs ~70–150K tokens and 1–4 minutes, more than the edit it would perform. (b) A spool worker NEVER dispatches a capture subagent: it already is an isolated headless process with no human transcript to keep clean, so it does all I/O inline. Never do vault file I/O inline in the main conversation — that litter is exactly what this structure removes.
 
 ### Algorithm
 
@@ -47,7 +47,7 @@ Triggered by the Stop hook (which re-arms whenever the sentinel is older than `V
 
 4. **Cross-subgraph rule**: if a candidate node would apply to >=2 sibling subgraphs in the same namespace (e.g. several `<namespace>/*` subgraphs), write it to `<namespace>/shared/` instead.
 
-5. **Dispatch ONE capture subagent** (synchronous `general-purpose` Task with **`model: sonnet`** — the main agent already decided WHAT is worth capturing; the capture agent does mechanical dedup + file I/O and does not need the session's model tier. Wait for it; do NOT do this work inline). Its prompt must carry everything, since it has none of the session's context:
+5. **Dispatch ONE capture subagent** — unless the small-delta or spool-worker exception above applies, in which case do the I/O inline with the same rules (a–e below) and skip to step 6 — (synchronous `general-purpose` Task with **`model: sonnet`** — the main agent already decided WHAT is worth capturing; the capture agent does mechanical dedup + file I/O and does not need the session's model tier. Wait for it). Its prompt must carry everything, since it has none of the session's context:
    - the target subgraph id + root path (and `shared/` path when step 4 applies);
    - **the full candidate brief** — per candidate: intended folder, proposed kebab-case filename, and the complete fact content (the why/gotcha/scar, 2–8 lines, links, ticket ids). Write facts out in full — the subagent cannot ask follow-ups;
    - its working rules, verbatim:
@@ -68,7 +68,8 @@ Triggered by the Stop hook (which re-arms whenever the sentinel is older than `V
 If after scanning you have no candidates (e.g. trivial typo session), still touch the timestamp file and print "no knowledge delta — nothing to capture this turn" so the Stop hook lets the session exit cleanly. Do not create empty nodes. (With the age-based Stop gate, a long quiet session re-prompts every ~30 min; the short-circuit costs one line each time and keeps the gate honest.)
 
 ### Spool-worker variant (`actualize spool-worker`)
-A headless session spawned by `scripts/spool-drain.sh` for ONE dead session's record (`VAULT_SPOOL_WORKER=1` in its environment; the launch prompt names the record, the digest and the byte count of the unswept tail). Same algorithm, three differences:
+A headless session spawned by `scripts/spool-drain.sh` for ONE dead session's record (`VAULT_SPOOL_WORKER=1` in its environment; the launch prompt names the record, the digest and the byte count of the unswept tail). Same algorithm, four differences:
+- **All vault I/O inline — never dispatch a capture subagent.** You are already the isolated process; a nested agent only doubles the tokens.
 - **The session context is a digest, not memory.** Read the digest the prompt names; only the part after the LAST `#### ===== VAULT SWEEP BOUNDARY` line is unswept — everything above it was captured by that session's own sweeps. Mine the tail; read earlier parts only for context the tail refers to. Identity comes from the record's `cwd` (the worker is launched there, so SessionStart already injected the right subgraph).
 - **The record is the receipt.** After a clean sync (or a genuine no-delta) `rm` the spool record the prompt names. On a capture-agent error, a DIVERGED or REFUSING sync, leave it: `spool-drain.sh` counts attempts in the record and SessionStart relaunches stale ones until `VAULT_SPOOL_DRAIN_MAX_ATTEMPTS` (3), after which the record is listed for a live session.
 - **No timestamp, no self-sweep.** The worker's own Stop/SessionEnd hooks are silenced by the env flag; do not touch `last-actualize`, never mine other records, never re-add ssh keys or resolve divergence.
@@ -114,10 +115,10 @@ The skill (and the hook scripts that invoke it) use these per-session state file
 
 | File | Owner | Purpose |
 |---|---|---|
-| `last-actualize` | this skill (actualize mode) | Timestamp of the last sweep; Stop re-prompts when it is missing OR older than `VAULT_ACTUALIZE_FRESHNESS_SECONDS` (default 1800) |
+| `last-actualize` | this skill (actualize mode) | Timestamp of the last sweep. Read by SessionEnd (a fresh one = nothing to spool) and, only under `VAULT_STOP_CAPTURE=1`, by the legacy Stop nag (re-prompts when missing OR older than `VAULT_ACTUALIZE_FRESHNESS_SECONDS`, default 1800) |
 | `~/.claude/vault-state/rejected.log` | `rejected-log.sh` (actualize mode) | One row per salience-gate rejection — the gate's false-negative audit trail. Deliberately NOT under `/tmp`: tmpfs wiped it at every reboot, so the rate it exists to measure was never computable across more than one uptime |
 | `/tmp/vault-pause-<cwdhash>` | `/vault-pause` slash command | When present, hooks no-op for every session in that cwd (cwd-keyed: slash-command shells don't know the session id; hooks do know their cwd) |
-| `~/.claude/vault-spool/<sid>.json` | `spool-tail.sh` (SessionEnd hook) | Pointer to a session that ended unswept, with a `drain_attempts` counter. Consumed by `spool-drain.sh`; listed at SessionStart only once auto-drain has given up on it |
+| `~/.claude/vault-spool/<sid>.json` | `prompt-actualize.sh` (Stop, `live:true` + claude `pid` — crash insurance) and `spool-tail.sh` (SessionEnd, `live:false`) | Pointer to a session's unswept tail with a `drain_attempts` counter. `spool-drain.sh` never mines a record whose pid is a live claude; a dead pid on a live record is the crash case and IS mined. Listed at SessionStart only once auto-drain has given up on it |
 | `~/.claude/vault-state/spool-drain/<sid>.{digest.md,log,pid}` | `spool-drain.sh` | The dead session's rendered digest (`transcript-digest.py`), the worker's output, and its pid while running. Decisions (tail-empty, spawn, max-attempts, worker-exit) go to `~/.claude/vault-state/hook-events.log` |
 
 ## Slash commands

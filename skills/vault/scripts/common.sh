@@ -101,3 +101,41 @@ spool_dir() {
 is_spool_worker() {
   [[ "${VAULT_SPOOL_WORKER:-}" == "1" ]]
 }
+
+# The claude process that owns this hook: the nearest ancestor whose comm is `claude`. Hooks may be
+# spawned through a shell wrapper, so a bare $PPID is not reliable; walking up is. Empty when not found.
+claude_ancestor_pid() {
+  local pid="${1:-$PPID}" comm
+  while [[ -n "$pid" && "$pid" != "1" && "$pid" != "0" ]]; do
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null || echo "")
+    if [[ "$comm" == "claude" ]]; then echo "$pid"; return 0; fi
+    pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null || echo "")
+  done
+  return 1
+}
+
+# Is the session that wrote a spool record still running? True only when the recorded pid is alive AND
+# is a claude process (a reused pid that is not claude counts as dead). The safe direction on doubt is
+# "live": the drain then waits, and a later relaunch re-checks — it never mines a running session.
+session_is_live() {   # <pid>
+  local pid="$1"
+  [[ -n "$pid" && "$pid" != "null" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  [[ "$(cat "/proc/$pid/comm" 2>/dev/null)" == "claude" ]]
+}
+
+# Write or refresh a session's spool record. drain_attempts survives across writes; live/pid/ended_at are
+# replaced. The Stop hook writes live=true (crash insurance, no model work); SessionEnd writes live=false.
+spool_write_record() {   # <sid> <cwd> <transcript_path> <live:true|false> <pid>
+  local sid="$1" cwd="$2" tp="$3" live="$4" pid="${5:-}" spool f prev=0
+  spool="$(spool_dir)"
+  mkdir -p "$spool" 2>/dev/null || return 0
+  f="$spool/$sid.json"
+  [[ -f "$f" ]] && prev=$(jq -r '.drain_attempts // 0' "$f" 2>/dev/null || echo 0)
+  jq -n --arg sid "$sid" --arg cwd "$cwd" --arg tp "$tp" --arg ts "$(date -Is)" \
+        --argjson live "$([[ "$live" == "true" ]] && echo true || echo false)" \
+        --arg pid "$pid" --argjson n "${prev:-0}" \
+        '{session_id:$sid, cwd:$cwd, transcript_path:$tp, live:$live, pid:($pid|if .=="" then null else tonumber end),
+          ended_at:(if $live then null else $ts end), touched_at:$ts, drain_attempts:$n}' \
+        > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f" 2>/dev/null || rm -f "$f.tmp" 2>/dev/null
+}

@@ -37,9 +37,15 @@ actualize_file="/tmp/vault-${HOOK_SESSION_ID}/last-actualize"
 # worth one is a sweep that just finished.
 min_age="${VAULT_SPOOL_MIN_AGE_SECONDS:-120}"
 
+# A sweep that JUST finished (fresh sentinel — a /vault-update, or the legacy in-session nag) leaves
+# nothing to insure: skip, and drop any live record the Stop hook wrote, so no worker is spawned for
+# an already-captured tail.
 if [[ -f "$actualize_file" ]]; then
   age=$(( $(date +%s) - $(stat -c %Y "$actualize_file" 2>/dev/null || echo 0) ))
-  (( age < min_age )) && exit 0
+  if (( age < min_age )); then
+    rm -f "$(spool_dir)/${HOOK_SESSION_ID}.json" 2>/dev/null
+    exit 0
+  fi
 fi
 
 transcript=$(echo "$HOOK_INPUT_RAW" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
@@ -47,11 +53,9 @@ transcript=$(echo "$HOOK_INPUT_RAW" | jq -r '.transcript_path // ""' 2>/dev/null
 [[ -n "$transcript" && ! -f "$transcript" ]] && exit 0
 
 spool="$(spool_dir)"
-mkdir -p "$spool" 2>/dev/null || exit 0
-jq -n --arg sid "$HOOK_SESSION_ID" --arg cwd "$HOOK_CWD" \
-      --arg tp "$transcript" --arg ts "$(date -Is)" \
-      '{session_id:$sid, cwd:$cwd, transcript_path:$tp, ended_at:$ts, drain_attempts:0}' \
-      > "$spool/${HOOK_SESSION_ID}.json" 2>/dev/null || true
+# Shared writer: a Stop hook may already have written this record as live crash insurance; SessionEnd
+# marks it ended and keeps whatever drain_attempts it carries.
+spool_write_record "$HOOK_SESSION_ID" "$HOOK_CWD" "$transcript" false ""
 
 # The record is insurance; the drain is the actual capture. Detached, returns at once.
 [[ -f "$spool/${HOOK_SESSION_ID}.json" ]] && bash "$self_dir/spool-drain.sh" --launch "$spool/${HOOK_SESSION_ID}.json"

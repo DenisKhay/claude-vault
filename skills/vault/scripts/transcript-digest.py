@@ -19,6 +19,13 @@ import sys
 # newline after the colon is why a single-line regex missed every marker on first try.
 MARK = re.compile(r"\Astop hook feedback:[\s\S]*prompt-actualize", re.IGNORECASE)
 SKIP = re.compile(r"\A<(local-command-caveat|command-name|local-command-stdout)")
+# A nag is a REQUEST to sweep, not a sweep. Audit III (digest-boundary-is-nag-not-sweep, high): a session
+# killed between the nag and the sweep's end had its whole segment counted as "already captured" and the
+# drain deleted the record as tail-empty — the insurance failed in the exact crash it exists for. So a nag
+# only becomes a boundary once a COMPLETION follows it: the sentinel touch the skill performs, or the
+# skill's own closing line. A nag with no completion leaves everything since the last real boundary as tail.
+DONE_TEXT = re.compile(r"no knowledge delta|\bvault: \d+ updated", re.IGNORECASE)
+DONE_CMD = re.compile(r"last-actualize")
 
 
 def clip(s, n):
@@ -34,6 +41,7 @@ def main(src, out):
     sweeps = 0
     tail_bytes = 0
     total_bytes = 0
+    pending = None  # timestamp of a nag whose sweep has not (yet) completed
 
     def emit(s, counted=True):
         nonlocal tail_bytes, total_bytes
@@ -83,7 +91,7 @@ def main(src, out):
                         if not txt or SKIP.match(txt):
                             continue
                         if MARK.match(txt):
-                            boundary(ts)
+                            pending = ts
                             continue
                         if txt.startswith("Base directory for this skill:"):
                             emit("\n[USER %s] (skill loaded: %s)" % (ts, squash(txt[:120])))
@@ -116,8 +124,14 @@ def main(src, out):
                         txt = (b.get("text") or "").strip()
                         if txt:
                             emit("\n[ASSISTANT %s] %s" % (ts, clip(txt, 6000)))
+                            if pending is not None and DONE_TEXT.search(txt):
+                                boundary(pending)
+                                pending = None
                     elif bt == "tool_use":
                         i = b.get("input") or {}
+                        if pending is not None and isinstance(i, dict) and DONE_CMD.search(str(i.get("command") or "")):
+                            boundary(pending)
+                            pending = None
                         d = ""
                         if isinstance(i, dict):
                             for k in ("command", "file_path", "path", "pattern", "description", "prompt", "query", "url"):
@@ -128,6 +142,8 @@ def main(src, out):
                             d = json.dumps(d)
                         emit("  [TOOL %s] %s" % (b.get("name"), clip(squash(d), 240)), counted=False)
 
+    if pending is not None:
+        lines.append("\n#### (a sweep was requested at %s but never completed — everything above since the last boundary is UNSWEPT)" % pending)
     lines.append(
         "\n#### END OF TRANSCRIPT — %d sweep boundaries; the part after the LAST boundary is unswept." % sweeps
     )

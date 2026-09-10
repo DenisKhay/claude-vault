@@ -173,3 +173,33 @@ Audit III (48 findings) flagged five sync.sh defects; this rewrite fixes them to
 Not in this change (audit III, separate): inject-context.sh diverged-marker lifecycle + both-way
 ancestor test; the derived-`_index.md` conflict auto-resolve; registry `~/` path prefixes;
 headless `claude -p` capture guard. These are the rest of the multimachine minimum-change list.
+
+## 1.7.0 — capture off the critical path (2026-09-10)
+
+Denis: "on every end of the work it writes sum-ups, spawns agents that prevent me from exiting a
+context-spent session". Measured in one session: 9 in-session sweeps, ~800K sonnet tokens, ~25 min of
+subagent wall time, all landing at Stop. Not the price — a default.
+
+- [x] **transcript-digest.py** — a nag is a boundary only once a COMPLETION follows it (the sentinel
+      touch, or "no knowledge delta" / "vault: N updated"). Closes audit III `digest-boundary-is-nag-not-
+      sweep` (high): a session killed mid-sweep no longer has its tail deleted as "already captured".
+- [x] **prompt-actualize.sh** — Stop is SILENT by default: writes the spool record `live:true` + the
+      owning claude `pid` (nearest `claude` ancestor of the hook) and exits 0. `VAULT_STOP_CAPTURE=1`
+      restores the 30-min in-session nag.
+- [x] **common.sh** — `spool_write_record` (shared by Stop + SessionEnd; keeps `drain_attempts`),
+      `claude_ancestor_pid`, `session_is_live` (pid alive AND comm == claude).
+- [x] **spool-tail.sh** — reuses the writer, marks `live:false`; a fresh sentinel still means "nothing
+      to spool" and now also drops the live record.
+- [x] **spool-drain.sh** — never mines a record whose pid is a live claude (`session-live`); a dead pid
+      on a live record is the crash case and IS mined (`crashed-session`). Worker log is append-only
+      per attempt (failures stay visible); worker launched with `WEZTERM_PANE` unset.
+- [x] **inject-context.sh** — the SessionStart relaunch skips live records whose session is alive.
+- [x] **SKILL.md** — lever 2: a small delta (≤2 candidates, ≤~15-line edits to existing nodes) is done
+      inline, no subagent; a spool worker NEVER dispatches a capture subagent. Triggers + state table
+      updated. hooks.json + README describe the new default.
+- [x] tests: crash-case digest fixture, silent-Stop record, legacy nag opt-in, drain live/crashed, log
+      append, SessionEnd keeps attempts — suite 192 → 206 green.
+
+Trade-off accepted: the vault is current only after a session ends (worker lag), not while working.
+Not done (audit items still open): worker MCP/hook overhead (`--strict-mcp-config`), test-suite state
+isolation, headless `claude -p` capture guard.

@@ -16,9 +16,27 @@ _drain_fixture() {   # path, marker_count (0..2) — writes a transcript JSONL
   _a "long answer one $(head -c 6000 /dev/zero | tr '\0' 'a')"
   (( markers >= 1 )) && _m
   _a "no knowledge delta — nothing to capture this turn"
-  (( markers >= 2 )) && _m
+  (( markers >= 2 )) && { _m; _a "vault: 2 updated, 0 new (synced)"; }
   _u "TAILQUESTION about the palette"
   _a "TAILANSWER the wine accent lives under --blue"
+}
+
+# The crash case the audit found (digest-boundary-is-nag-not-sweep, HIGH): the nag arrived, the
+# session died before the sweep finished. That tail was NEVER swept and must not be counted as such.
+_drain_fixture_crashed() {   # path — one COMPLETED sweep, then knowledge, then a nag the session never finished
+  local tp="$1"
+  : > "$tp"
+  _u() { jq -nc --arg t "$1" '{type:"user", timestamp:"2026-09-05T10:00:00Z", message:{role:"user", content:$t}}' >> "$tp"; }
+  _a() { jq -nc --arg t "$1" '{type:"assistant", timestamp:"2026-09-05T10:01:00Z", message:{role:"assistant", content:[{type:"text", text:$t}]}}' >> "$tp"; }
+  _t() { jq -nc '{type:"assistant", timestamp:"2026-09-05T10:02:00Z", message:{role:"assistant", content:[{type:"tool_use", name:"Bash", input:{command:"grep -rn something"}}]}}' >> "$tp"; }
+  _u "first question"
+  _a "answer one"
+  _u $'Stop hook feedback:\n[bash /x/skills/vault/scripts/prompt-actualize.sh]: Vault sync: invoke the vault skill in actualize mode.'
+  _a "no knowledge delta — nothing to capture this turn"
+  _a "KNOWLEDGE a hard-won scar, thirty minutes of real findings $(head -c 5000 /dev/zero | tr '\0' 'b')"
+  _u $'Stop hook feedback:\n[bash /x/skills/vault/scripts/prompt-actualize.sh]: Vault sync: last actualize was 1900s ago — sweep the DELTA.'
+  _t
+  _t
 }
 
 _drain_env() {   # sets up an isolated state/spool dir pair, echoes the root
@@ -50,6 +68,15 @@ assert_contains "boundaries=0" "$out" "digest: no marker → no boundary"
 tail_bytes=$(sed -n 's/.*tail_bytes=\([0-9]*\).*/\1/p' <<<"$out")
 [[ "$tail_bytes" -gt 6000 ]] && got=ok || got="bad:$tail_bytes"
 assert_eq "ok" "$got" "digest: no marker → the whole transcript is the tail"
+
+# --- digest: a nag with NO completion is NOT a boundary (the crash case) -----------------
+_drain_fixture_crashed "$root/tc.jsonl"
+out=$(python3 "$drain_script_dir/transcript-digest.py" "$root/tc.jsonl" "$root/tc.md" 2>/dev/null || true)
+assert_contains "boundaries=1" "$out" "digest: only the COMPLETED sweep is a boundary; the unfinished nag is not"
+tail_bytes=$(sed -n 's/.*tail_bytes=\([0-9]*\).*/\1/p' <<<"$out")
+[[ "$tail_bytes" -gt 5000 ]] && got=ok || got="bad:$tail_bytes"
+assert_eq "ok" "$got" "digest: knowledge written before an unfinished nag is UNSWEPT tail, not 'already captured'"
+assert_contains "KNOWLEDGE" "$(sed -n '/BOUNDARY #1/,$p' "$root/tc.md")" "digest: that knowledge sits after the last real boundary, where the worker reads"
 
 # --- drain: under the floor deletes the spool and logs ----------------------------
 _drain_spool "$root" "drain-empty" "$root/t2.jsonl"
@@ -118,4 +145,43 @@ out=$(jq -nc '{session_id:"drain-ss-normal2", cwd:"/nonexistent-drain-test", hoo
     bash "$drain_script_dir/inject-context.sh" 2>/dev/null || true)
 assert_contains "drain-gaveup" "$out" "SessionStart: a spool auto-drain gave up on is listed for manual mining"
 
+rm -rf "$root"
+
+# --- 1.7.0: a record for a LIVE session is never mined; a crashed one (dead pid) is ---------
+root=$(_drain_env)
+_drain_fixture "$root/live.jsonl" 0
+# live=true with THIS shell's own ancestor claude (or, failing that, any live pid that is claude) → skip
+livepid=$(pgrep -x claude | head -1)
+if [[ -n "$livepid" ]]; then
+  jq -n --arg sid "live-sess" --arg tp "$root/live.jsonl" --argjson pid "$livepid" \
+    '{session_id:$sid, cwd:"/x", transcript_path:$tp, live:true, pid:$pid, ended_at:null, drain_attempts:0}' > "$root/spool/live-sess.json"
+  VAULT_STATE_DIR="$root/state" VAULT_SPOOL_DIR="$root/spool" VAULT_SPOOL_DRAIN_DRY_RUN=1 \
+    bash "$drain_script_dir/spool-drain.sh" --run "$root/spool/live-sess.json" >/dev/null 2>&1 || true
+  [[ -f "$root/spool/live-sess.json" ]] && got=kept || got=deleted
+  assert_eq "kept" "$got" "drain: a live session's record is left alone (never mine a running session)"
+  assert_contains "session-live" "$(cat "$root/state/hook-events.log" 2>/dev/null)" "drain: the live skip is logged"
+  [[ -f "$root/state/live-sess.log" ]] && got=spawned || got=no-spawn
+  assert_eq "no-spawn" "$got" "drain: no worker is spawned for a live session"
+fi
+# live=true but the pid is dead (a crashed session) → the drain proceeds like an ended one
+jq -n --arg sid "crashed-sess" --arg tp "$root/live.jsonl" \
+  '{session_id:$sid, cwd:"/x", transcript_path:$tp, live:true, pid:4194000, ended_at:null, drain_attempts:0}' > "$root/spool/crashed-sess.json"
+VAULT_STATE_DIR="$root/state" VAULT_SPOOL_DIR="$root/spool" VAULT_SPOOL_DRAIN_DRY_RUN=1 \
+  bash "$drain_script_dir/spool-drain.sh" --run "$root/spool/crashed-sess.json" >/dev/null 2>&1 || true
+assert_contains "spawn" "$(grep crashed-sess "$root/state/hook-events.log" 2>/dev/null)" "drain: a crashed session (dead pid) IS mined — that is the insurance"
+rm -rf "$root"
+
+# --- 1.7.0: the worker log appends per attempt instead of truncating (failures stay visible) --
+grep -q '>> "$state/$sid.log"' "$drain_script_dir/spool-drain.sh" && got=append || got=truncate
+assert_eq "append" "$got" "drain: the worker log is append-only across attempts"
+
+# --- 1.7.0: SessionEnd preserves drain_attempts and marks the record ended -------------------
+root=$(_drain_env)
+_drain_fixture "$root/end.jsonl" 0
+jq -n --arg sid "end-sess" --arg tp "$root/end.jsonl" \
+  '{session_id:$sid, cwd:"/x", transcript_path:$tp, live:true, pid:4194000, ended_at:null, drain_attempts:2}' > "$root/spool/end-sess.json"
+input=$(jq -nc --arg tp "$root/end.jsonl" '{session_id:"end-sess", cwd:"/x", hook_event_name:"SessionEnd", transcript_path:$tp}')
+echo "$input" | VAULT_STATE_DIR="$root/state" VAULT_SPOOL_DIR="$root/spool" VAULT_SPOOL_AUTODRAIN=0 bash "$drain_script_dir/spool-tail.sh" >/dev/null 2>&1 || true
+assert_eq "2" "$(jq -r .drain_attempts "$root/spool/end-sess.json" 2>/dev/null)" "spool-tail: SessionEnd keeps the attempts counter a Stop write started"
+assert_eq "false" "$(jq -r .live "$root/spool/end-sess.json" 2>/dev/null)" "spool-tail: SessionEnd marks the record ended"
 rm -rf "$root"

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # prompt-actualize.sh — Stop + PreCompact hook target.
-# Stop: blocks when the actualize sentinel is MISSING or STALE (older than
+# Stop (1.7.0 default): SILENT. Refreshes the session's spool record (live + claude pid) as
+#   crash insurance and exits 0; the SessionEnd worker owns the capture. Set
+#   VAULT_STOP_CAPTURE=1 for the pre-1.7 behaviour below.
+# Stop (VAULT_STOP_CAPTURE=1): blocks when the actualize sentinel is MISSING or STALE (older than
 #   VAULT_ACTUALIZE_FRESHNESS_SECONDS, default 1800). A fresh sentinel passes.
 #   The 2026-08-30 audit proved the old first-actualize-only gate swept once at
 #   the knowledge-poorest moment (end of turn 1) and then never again — session
@@ -35,6 +38,19 @@ actualize_file="/tmp/vault-${HOOK_SESSION_ID}/last-actualize"
 case "$HOOK_EVENT" in
   Stop)
     if [[ "$HOOK_STOP_HOOK_ACTIVE" == "true" ]]; then
+      exit 0
+    fi
+    # 1.7.0 default: the Stop hook is SILENT. Capture is owned by the SessionEnd spool worker (off the
+    # human's critical path); the Stop turn only refreshes the crash insurance — a spool record marked
+    # live with the owning claude pid, so a session that dies without a SessionEnd is still mined by
+    # the next SessionStart relaunch. Zero model work, zero wall time. VAULT_STOP_CAPTURE=1 restores the
+    # nag (in-session capture every VAULT_ACTUALIZE_FRESHNESS_SECONDS) for whoever wants the vault
+    # current while they work.
+    if [[ "${VAULT_STOP_CAPTURE:-0}" != "1" ]]; then
+      tp=$(echo "$HOOK_INPUT_RAW" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
+      if declare -f spool_write_record >/dev/null 2>&1; then
+        spool_write_record "$HOOK_SESSION_ID" "$HOOK_CWD" "$tp" true "$(claude_ancestor_pid 2>/dev/null || echo "")"
+      fi
       exit 0
     fi
     freshness="${VAULT_ACTUALIZE_FRESHNESS_SECONDS:-1800}"

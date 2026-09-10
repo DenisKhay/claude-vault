@@ -113,6 +113,11 @@ extra_notices() {
       if [[ -n "$sid" && -f "$pid_dir/$sid.pid" ]] && kill -0 "$(cat "$pid_dir/$sid.pid" 2>/dev/null)" 2>/dev/null; then
         live=1
       fi
+      # A Stop-written record for a session that is still RUNNING is not a tail to mine — skip it
+      # entirely (it is neither in flight nor given up on; its own SessionEnd will hand it over).
+      if [[ "$(jq -r '.live // false' "$f" 2>/dev/null)" == "true" ]] && session_is_live "$(jq -r '.pid // ""' "$f" 2>/dev/null)"; then
+        continue
+      fi
       # Auto-drain owns a record until it has used up its attempts: a live worker, or a
       # young record whose worker has not reported yet, is in flight; a stale one without
       # a worker (SessionEnd's launch died with the host, or the worker crashed) is relaunched.
