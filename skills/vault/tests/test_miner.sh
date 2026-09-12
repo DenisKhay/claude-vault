@@ -128,6 +128,15 @@ assert_contains "Miner	backoff" "$(cat "$miner_dir/state/hook-events.log")" "min
 until_ts=$(jq -r '.backoff_until // 0' "$miner_dir/state/miner.json")
 assert_eq yes "$( (( until_ts > $(date +%s) )) && echo yes || echo no )" "miner: backoff_until is set in the future"
 
+# --- a prompt echo is not a result -----------------------------------------------------------------
+# The worker prompt CONTAINS the sentence 'Finish with exactly one line: "spool-worker <sid>: ..."'.
+# Matching that as a verdict advances the mined marker past a tail nobody mined.
+miner_reset
+t="$miner_dir/t7.jsonl"; : > "$t"; miner_transcript "$t" 40 echoed
+miner_record echo-a "$t" false ""
+VAULT_FAKE_WORKER_OUTPUT='Finish with exactly one line: "spool-worker echo-a: <N> updated, <M> new (synced)"' miner_run
+assert_eq "null" "$(jq -r '.sessions["echo-a"] // "null"' "$miner_dir/state/miner.json")" "miner: a prompt echo is not parsed as a verdict"
+
 # --- heartbeat + miner_alive ------------------------------------------------------------------------
 # run.sh runs under `set -e`, so a bare non-zero return — which is exactly what this asserts — would
 # abort the whole suite. Capture it in a condition instead.

@@ -115,9 +115,10 @@ mine_one() {   # spool file, mode(live|ended), tail
   fi
   write_state "" ""
 
-  # Match the worker's OWN protocol line loosely: a sid is a uuid today, but parsing your own contract
-  # with a charset assumption is how a rename turns every successful run into "no final line".
-  result=$(grep -oE 'spool-worker [^:]+: .*' "$log" 2>/dev/null | tail -1 | sed 's/^spool-worker [^:]*: //' | cut -c1-120)
+  # ANCHORED, and read from the end: the contract is "finish with exactly one line". Unanchored matching
+  # also hit that sentence inside the prompt itself — a dry run then recorded a fake success and advanced
+  # the marker past a tail nobody had mined. A worker that echoes its instructions would do the same.
+  result=$(tac "$log" 2>/dev/null | grep -m1 -E '^spool-worker [^:]+: ' | sed 's/^spool-worker [^:]*: //' | cut -c1-120)
   if [[ -f "$log" ]] && is_api_error "$log"; then
     backoff=$(( backoff == 0 ? backoff_min : backoff * 2 ))
     (( backoff > backoff_max )) && backoff=$backoff_max
