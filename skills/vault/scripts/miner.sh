@@ -142,7 +142,10 @@ mine_one() {   # spool file, mode(live|ended), tail
   (( post > pre )) && slice=$(tail -c "+$((pre + 1))" "$log" 2>/dev/null)
   # ANCHORED: the prompt itself contains 'Finish with exactly one line: "spool-worker <sid>: …"', and an
   # unanchored match reads that sentence as a verdict.
-  result=$(printf '%s' "$slice" | tac | grep -m1 -E '^spool-worker [^:]+: ' | head -1 | sed 's/^spool-worker [^:]*: //' | cut -c1-120)
+  # A worker that ends without a trailing newline leaves the NEXT attempt's "===== attempt N ====="
+  # banner glued onto the same line, so trimming by line is not enough — cut the banner off explicitly.
+  result=$(printf '%s' "$slice" | tac | grep -m1 -E '^spool-worker [^:]+: ' | head -1 \
+           | sed -e 's/^spool-worker [^:]*: //' -e 's/=====.*$//' -e 's/[[:space:]]*$//' | cut -c1-120)
   if printf '%s' "$slice" | grep -qiE 'API Error: (401|403|429)|usage limit|rate.?limit|Failed to authenticate|Request not allowed'; then
     backoff=$(( backoff == 0 ? backoff_min : backoff * 2 ))
     (( backoff > backoff_max )) && backoff=$backoff_max
