@@ -1,0 +1,16 @@
+[Unit]
+Description=vault miner — mines live Claude Code session tails into the knowledge vault
+After=default.target
+
+[Service]
+Type=simple
+# Through the wrapper, never a versioned path: the plugin cache is per-version, and a unit pinned to
+# one version would silently keep running an old miner after every upgrade.
+ExecStart=%h/.local/bin/vault-miner
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Install]
+WantedBy=default.target

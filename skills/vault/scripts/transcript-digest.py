@@ -36,12 +36,14 @@ def squash(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
-def main(src, out):
+def main(src, out, boundary_at=None):
     lines = []
     sweeps = 0
     tail_bytes = 0
     total_bytes = 0
     pending = None  # timestamp of a nag whose sweep has not (yet) completed
+    offset = 0      # bytes consumed, for --boundary-at-byte
+    marked = boundary_at is None
 
     def emit(s, counted=True):
         nonlocal tail_bytes, total_bytes
@@ -60,9 +62,15 @@ def main(src, out):
         )
         tail_bytes = 0
 
-    with open(src, encoding="utf-8", errors="replace") as f:
-        for raw in f:
-            raw = raw.strip()
+    # Binary read so the offset is exact bytes, which is what the miner records. Transcripts are
+    # append-only JSONL, so "everything before byte N" is a stable statement about a LIVE session.
+    with open(src, "rb") as f:
+        for bline in f:
+            if not marked and offset >= boundary_at:
+                boundary("miner @%d bytes" % boundary_at)
+                marked = True
+            offset += len(bline)
+            raw = bline.decode("utf-8", "replace").strip()
             if not raw:
                 continue
             try:
@@ -142,6 +150,10 @@ def main(src, out):
                             d = json.dumps(d)
                         emit("  [TOOL %s] %s" % (b.get("name"), clip(squash(d), 240)), counted=False)
 
+    # The offset can sit at (or past) EOF — that is exactly what "mined everything so far" looks like.
+    # Without this the boundary never fires and a just-mined session reads as fully unswept.
+    if not marked:
+        boundary("miner @%d bytes" % boundary_at)
     if pending is not None:
         lines.append("\n#### (a sweep was requested at %s but never completed — everything above since the last boundary is UNSWEPT)" % pending)
     lines.append(
@@ -153,7 +165,17 @@ def main(src, out):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("usage: transcript-digest.py <transcript.jsonl> <out.md>", file=sys.stderr)
+    args = sys.argv[1:]
+    at = None
+    if "--boundary-at-byte" in args:
+        i = args.index("--boundary-at-byte")
+        try:
+            at = int(args[i + 1])
+        except (IndexError, ValueError):
+            print("usage: transcript-digest.py <transcript.jsonl> <out.md> [--boundary-at-byte N]", file=sys.stderr)
+            sys.exit(2)
+        del args[i:i + 2]
+    if len(args) != 2:
+        print("usage: transcript-digest.py <transcript.jsonl> <out.md> [--boundary-at-byte N]", file=sys.stderr)
         sys.exit(2)
-    main(sys.argv[1], sys.argv[2])
+    main(args[0], args[1], at)

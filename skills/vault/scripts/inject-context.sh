@@ -87,7 +87,19 @@ if [[ -d "$vroot/.git" ]] && command -v git >/dev/null 2>&1 && command -v flock 
 fi
 
 # Warnings assembled for the context block: sync divergence + unswept session tails.
+# The daemon's one failure mode is being down, and a silent one would be worse than the gap it fixes.
+miner_notice() {
+  local f pid beat age
+  f="$(vault_state_dir)/miner.json"
+  miner_alive && return 0
+  [[ -f "$f" ]] || { printf '\n⚠ VAULT MINER not installed on this machine — capture falls back to session-end only (see `install-miner.sh`).\n'; return 0; }
+  pid=$(jq -r '.pid // "?"' "$f" 2>/dev/null); beat=$(jq -r '.beat_at // "?"' "$f" 2>/dev/null)
+  age=$(( ( $(date +%s) - $(date -d "$beat" +%s 2>/dev/null || echo 0) ) / 60 ))
+  printf '\n⚠ VAULT MINER is DOWN (pid %s, last heartbeat %sm ago) — live sessions are not being mined. Restart: `systemctl --user restart vault-miner`.\n' "$pid" "$age"
+}
+
 extra_notices() {
+  miner_notice
   if [[ -f "$vroot/.sync-diverged" ]]; then
     printf '\n⚠ VAULT SYNC DIVERGED: local and remote history do not fast-forward. Do NOT auto-merge — tell the user; resolve by hand (see the vault skill), then delete %s/.sync-diverged.\n' "$vroot"
   fi
@@ -118,6 +130,8 @@ extra_notices() {
       if [[ "$(jq -r '.live // false' "$f" 2>/dev/null)" == "true" ]] && session_is_live "$(jq -r '.pid // ""' "$f" 2>/dev/null)"; then
         continue
       fi
+      # With the miner running it owns every launch; relaunching here would double-schedule.
+      miner_alive && { inflight=$(( inflight + 1 )); continue; }
       # Auto-drain owns a record until it has used up its attempts: a live worker, or a
       # young record whose worker has not reported yet, is in flight; a stale one without
       # a worker (SessionEnd's launch died with the host, or the worker crashed) is relaunched.
@@ -257,7 +271,7 @@ ctx=$(
   cat <<EOF
 Retrieval: read individual entry nodes lazily as the task touches them, OR use the \`vault_search\` MCP tool for keyword + (when embeddings are up) semantic search across all matched subgraphs (ranked, decay-aware). Prefer vault_search when you don't already know which node holds the answer.
 
-Vault skill is loaded. A capture sweep fires on Stop whenever the last sweep is older than 30 minutes. Capture only durable, non-obvious knowledge — skip anything re-derivable from a single source file.
+Vault skill is loaded. Capture runs OUTSIDE this session: the miner daemon mines this transcript's unswept tail in the background while you work, and again when the session ends. You do not need to sweep — but `/vault-update` still forces one now. Capture only durable, non-obvious knowledge — skip anything re-derivable from a single source file.
 EOF
   extra_notices
 )

@@ -16,6 +16,10 @@
 #      VAULT_SPOOL_DRAIN_MODEL (sonnet)         the worker's model
 #      VAULT_SPOOL_DRAIN_DRY_RUN=1              write the command to the log, run nothing
 #      VAULT_SPOOL_AUTODRAIN=0                  disable launching entirely
+#      VAULT_DRAIN_LIVE=1                       mine a RUNNING session (the miner daemon): the liveness
+#                                               refusal, the attempts gate and the below-floor delete are
+#                                               all off — a live record must survive its own mining
+#      VAULT_DRAIN_BOUNDARY_BYTES=<n>           digest boundary: everything before byte n was mined already
 # Every decision lands in <state>/hook-events.log; a worker's output in <state>/spool-drain/<sid>.log.
 
 set -uo pipefail
@@ -41,6 +45,10 @@ log_event() {   # decision, detail
 
 dry_run=0
 [[ "${VAULT_SPOOL_DRAIN_DRY_RUN:-}" == "1" ]] && dry_run=1
+live_mode=0
+[[ "${VAULT_DRAIN_LIVE:-0}" == "1" ]] && live_mode=1
+boundary_arg=()
+[[ -n "${VAULT_DRAIN_BOUNDARY_BYTES:-}" ]] && boundary_arg=(--boundary-at-byte "${VAULT_DRAIN_BOUNDARY_BYTES}")
 
 case "$mode" in
   --launch)
@@ -78,13 +86,15 @@ fi
 # A dead pid on a live record is the crash case — exactly what the insurance is for — so it proceeds.
 rec_live=$(jq -r '.live // false' "$spool_file" 2>/dev/null)
 rec_pid=$(jq -r '.pid // ""' "$spool_file" 2>/dev/null)
-if [[ "$rec_live" == "true" ]] && declare -f session_is_live >/dev/null 2>&1 && session_is_live "$rec_pid"; then
+if (( ! live_mode )) && [[ "$rec_live" == "true" ]] && declare -f session_is_live >/dev/null 2>&1 && session_is_live "$rec_pid"; then
   log_event session-live "pid=$rec_pid — record kept, not mined"
   exit 0
 fi
-[[ "$rec_live" == "true" ]] && log_event crashed-session "pid=${rec_pid:-none} dead — mining as ended"
+(( live_mode )) || { [[ "$rec_live" == "true" ]] && log_event crashed-session "pid=${rec_pid:-none} dead — mining as ended"; }
 
-if (( attempts >= max_attempts )); then
+# The attempts gate retires a DEAD record nobody can fix. A live session keeps producing new tail, so
+# counting its mines toward a 3-strike limit would silence it permanently after three bad days.
+if (( ! live_mode )) && (( attempts >= max_attempts )); then
   log_event max-attempts "attempts=$attempts — left for a live session"
   exit 0
 fi
@@ -96,7 +106,7 @@ if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; t
 fi
 
 digest="$state/$sid.digest.md"
-measure=$(python3 "$self_dir/transcript-digest.py" "$transcript" "$digest" 2>/dev/null) || measure=""
+measure=$(python3 "$self_dir/transcript-digest.py" "$transcript" "$digest" ${boundary_arg[@]+"${boundary_arg[@]}"} 2>/dev/null) || measure=""
 tail_bytes=$(sed -n 's/.*tail_bytes=\([0-9]*\).*/\1/p' <<<"$measure")
 boundaries=$(sed -n 's/.*boundaries=\([0-9]*\).*/\1/p' <<<"$measure")
 if [[ -z "$tail_bytes" ]]; then
@@ -104,23 +114,36 @@ if [[ -z "$tail_bytes" ]]; then
   exit 0
 fi
 
+(( live_mode )) && floor="${VAULT_MINER_LIVE_FLOOR_BYTES:-32768}"
 if (( tail_bytes < floor )); then
-  rm -f "$spool_file" "$digest" 2>/dev/null
-  log_event tail-empty "tail=${tail_bytes}B floor=${floor}B boundaries=$boundaries"
+  # Deleting a LIVE record would drop the crash insurance of a session that is still writing.
+  (( live_mode )) || rm -f "$spool_file" 2>/dev/null
+  rm -f "$digest" 2>/dev/null
+  log_event tail-empty "tail=${tail_bytes}B floor=${floor}B boundaries=$boundaries live=$live_mode"
   exit 0
 fi
 
-attempts=$(( attempts + 1 ))
-tmp=$(mktemp "$state/.spool.XXXXXX") && jq --argjson n "$attempts" '.drain_attempts = $n' "$spool_file" > "$tmp" 2>/dev/null \
-  && mv -f "$tmp" "$spool_file"
+if (( ! live_mode )); then
+  attempts=$(( attempts + 1 ))
+  tmp=$(mktemp "$state/.spool.XXXXXX") && jq --argjson n "$attempts" '.drain_attempts = $n' "$spool_file" > "$tmp" 2>/dev/null \
+    && mv -f "$tmp" "$spool_file"
+fi
+
+if (( live_mode )); then
+  subject="a RUNNING Claude Code session so its knowledge reaches the vault while the work is still going. That session (id $sid, cwd $cwd) is STILL ALIVE and will keep appending to its transcript after you finish — you are mining a snapshot of it."
+  record_rule="4. Do NOT delete the spool record: that session is still running and the record is its crash insurance. The miner records this run's result itself. On any failure — capture agent error, DIVERGED or REFUSING from sync.sh — say why in your final line."
+else
+  subject="a DEAD Claude Code session so its knowledge is not lost. That session (id $sid, cwd $cwd) ended $ended_at without a final capture sweep."
+  record_rule="4. On success (synced, or a genuine no-delta), delete the spool record: rm -f \"$spool_file\". On any failure — capture agent error, DIVERGED or REFUSING from sync.sh — leave the record in place and say why."
+fi
 
 prompt=$(cat <<PROMPT
-You are a vault SPOOL WORKER: a headless session mining the unswept tail of a DEAD Claude Code session so its knowledge is not lost. That session (id $sid, cwd $cwd) ended $ended_at without a final capture sweep. You are not that session; you have none of its context beyond the digest below.
+You are a vault SPOOL WORKER: a headless session mining the unswept tail of $subject You are not that session; you have none of its context beyond the digest below.
 
 1. Load the vault skill with the Skill tool (skill "vault:vault", args "actualize spool-worker") and follow its actualize algorithm in the spool-worker variant. Its scripts live in $self_dir (match.sh, rejected-log.sh, sync.sh, index-regen.py, registry-lint.py) — use that path; do not search the filesystem for them.
 2. Digest of the dead session: $digest — read it in chunks. It has $boundaries sweep boundary line(s) of the form "#### ===== VAULT SWEEP BOUNDARY"; everything ABOVE the last one was already captured by that session. Mine ONLY the part after the last boundary (${tail_bytes} bytes of text). Read earlier parts solely for context the tail refers to.
 3. Apply the salience gate to every candidate; log each rejection with rejected-log.sh; dispatch ONE capture subagent (model sonnet) with the full candidate brief; verify its machine-countable return line and zero removed lines; then sync with sync.sh passing exactly the reported paths.
-4. On success (synced, or a genuine no-delta), delete the spool record: rm -f "$spool_file". On any failure — capture agent error, DIVERGED or REFUSING from sync.sh — leave the record in place and say why.
+$record_rule
 Never mine other spool records, never touch files outside the vault, never re-add ssh keys or resolve git divergence.
 Finish with exactly one line: "spool-worker $sid: <N> updated, <M> new (synced)" or "spool-worker $sid: no knowledge delta" or "spool-worker $sid: FAILED — <reason>".
 PROMPT
@@ -152,7 +175,7 @@ workdir="$cwd"
 cd "$workdir" || exit 0
 echo $$ > "$pidfile"
 _run() { if command -v timeout >/dev/null 2>&1; then timeout 1800 "$@"; else "$@"; fi; }
-printf '\n===== attempt %s @ %s (pid %s) =====\n' "$attempts" "$(date -Is)" "$$" >> "$state/$sid.log" 2>/dev/null
+printf '\n===== attempt %s @ %s (pid %s) =====\n' "$( (( live_mode )) && echo live || echo "$attempts" )" "$(date -Is)" "$$" >> "$state/$sid.log" 2>/dev/null
 printf '%s' "$prompt" | _run env -u WEZTERM_PANE "${cmd[@]}" >> "$state/$sid.log" 2>&1
 code=$?
 rm -f "$pidfile" 2>/dev/null

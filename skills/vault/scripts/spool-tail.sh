@@ -58,5 +58,9 @@ spool="$(spool_dir)"
 spool_write_record "$HOOK_SESSION_ID" "$HOOK_CWD" "$transcript" false ""
 
 # The record is insurance; the drain is the actual capture. Detached, returns at once.
-[[ -f "$spool/${HOOK_SESSION_ID}.json" ]] && bash "$self_dir/spool-drain.sh" --launch "$spool/${HOOK_SESSION_ID}.json"
+# With the miner running, launching here too would mean two schedulers racing for the same record — it
+# picks this up within one poll instead. Without a miner this is still the only thing that mines.
+if [[ -f "$spool/${HOOK_SESSION_ID}.json" ]] && ! miner_alive; then
+  bash "$self_dir/spool-drain.sh" --launch "$spool/${HOOK_SESSION_ID}.json"
+fi
 exit 0

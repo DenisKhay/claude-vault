@@ -228,39 +228,52 @@ Thresholds are measured, not guessed: tails **≥32 KB produced nodes in 4 of 4 
 failures); tails **<16 KB in 7 of 22** (10 no-delta, 5 failed). At 32 KB the fleet needs ~11 runs/day,
 and a run costs ~4.2 min / 29 K output / 2.6 M cache-read — **1–3%** of what the seats themselves burn.
 
-- [ ] **transcript-digest.py** — `--boundary-at-byte N`: emit a synthetic sweep boundary when the scan
+- [x] **transcript-digest.py** — `--boundary-at-byte N`: emit a synthetic sweep boundary when the scan
       crosses that offset (transcripts are append-only, so an offset is exact). The effective boundary
       is the LATER of that and any in-transcript sweep, so a session's own `/vault-update` still counts.
-- [ ] **miner.sh** — the daemon. Every `VAULT_MINER_POLL_SECONDS` (60): write the heartbeat; re-exec if
+- [x] **miner.sh** — the daemon. Every `VAULT_MINER_POLL_SECONDS` (60): write the heartbeat; re-exec if
       a newer plugin version is installed (a release must not wait for a human restart); classify every
       spool record (skip `is_paused`): live+alive → mine at `VAULT_MINER_LIVE_FLOOR_BYTES` (32768),
       live+dead pid → crashed, ended → today's 4 KB floor; mine ONE candidate (largest tail first) under
       a machine-wide `flock -n`; back off 5→60 min on API errors WITHOUT burning `drain_attempts`
       (that counter is for mining failures, not a 403).
-- [ ] **miner state** — `<state>/miner.json`: heartbeat, running worker, per-session `mined_offset` +
+- [x] **miner state** — `<state>/miner.json`: heartbeat, running worker, per-session `mined_offset` +
       last result. NOT in the spool record: `spool_write_record` rebuilds that JSON on every Stop and
       keeps only `drain_attempts`, so a pinned old hook would wipe the marker and re-mine the tail.
-- [ ] **spool-drain.sh** — `--live`: worker prompt says the session is STILL RUNNING, mine only after
+- [x] **spool-drain.sh** — `--live`: worker prompt says the session is STILL RUNNING, mine only after
       the last boundary, do NOT delete the record. Success is read by the SCRIPT from the worker's
       existing final line, never from the record vanishing.
-- [ ] **spool-tail.sh** — SessionEnd stops launching a drain when a fresh miner heartbeat exists (the
+- [x] **spool-tail.sh** — SessionEnd stops launching a drain when a fresh miner heartbeat exists (the
       daemon takes it within one poll); with no daemon it keeps today's immediate launch.
-- [ ] **inject-context.sh** — warn when the heartbeat is stale/missing; relaunch stale records only when
+- [x] **inject-context.sh** — warn when the heartbeat is stale/missing; relaunch stale records only when
       no daemon is alive; and fix line 260, which still claims "a capture sweep fires on Stop whenever
       the last sweep is older than 30 minutes" — false since 1.7.0, and injected into every session.
-- [ ] **prompt-actualize.sh** — PreCompact drops the sentinel dance (it pointed at a Stop capture that
+- [x] **prompt-actualize.sh** — PreCompact drops the sentinel dance (it pointed at a Stop capture that
       no longer exists); mining reads the transcript, which still holds the pre-compaction content.
-- [ ] **vault-miner.service + install-miner.sh** — user unit, `Restart=always`, `RestartSec=5`,
+- [x] **vault-miner.service + install-miner.sh** — user unit, `Restart=always`, `RestartSec=5`,
       `WantedBy=default.target` (the pantheon-monitor pattern, 0 restarts since 2026-09-10), ExecStart
       through a version-resolving wrapper.
-- [ ] **watch.sh** — OPTIONAL and read-only: sessions with tail-vs-threshold, last mine + result, the
+- [x] **watch.sh** — OPTIONAL and read-only: sessions with tail-vs-threshold, last mine + result, the
       running worker, heartbeat age, backoff/gave-up records. Closing the tab changes nothing.
-- [ ] tests `test_miner.sh` under `VAULT_STATE_DIR`/`VAULT_SPOOL_DIR`: classification, lock
+- [x] tests `test_miner.sh` under `VAULT_STATE_DIR`/`VAULT_SPOOL_DIR`: classification, lock
       serialization, marker survives an old-hook record rewrite, API backoff, crashed path, paused
       skipped, heartbeat freshness, self-update re-exec.
-- [ ] bump 1.8.0, README + ARCHITECTURE, run suite, commit, push, reinstall, enable the unit.
+- [x] bump 1.8.0, README + ARCHITECTURE, run suite, commit, push, reinstall, enable the unit.
 
 Not doing: no age rule for idle sub-threshold tails (the <16 KB data says they would mostly be empty
 runs); no whole-transcript re-mine (still the open measurement from 1.6.0's review above); no actions in
 the watch; no clip-limit change — assistant text is never clipped, only tool output is (measured: 441 KB
 of tool results cut on ARMIS-408, 0 assistant messages).
+
+### Review (2026-09-12, shipped as 1.8.0)
+- `test_spool.sh` C5 wrote its 8 fixture records into the REAL `~/.claude/vault-spool`, so the assertion
+  depended on how many sessions happened to be open — 8 live records turned "and 3 more" into "and 8
+  more" and the suite failed on a clean tree too. Now isolated via `VAULT_SPOOL_DIR` (closes part of the
+  1.7.0 "test-suite state isolation" item; hook-events is still shared).
+- The fixture for "this pid is a live claude" has to be a binary NAMED `claude` — `comm` is the
+  executable's basename, so a `claude-proc` copy silently ran every "live" case as ENDED. The live
+  cases now assert `mode=live` in the event log rather than trusting the fixture.
+- `run.sh` runs under `set -e`: a bare `miner_alive` returning 1 (the thing being asserted) aborted the
+  whole suite mid-file. Assertions of a false condition must be wrapped in an `if`.
+- The miner parsed the worker's own protocol line with `spool-worker [0-9a-f-]+:` — fine for uuids,
+  silently "no final line" for anything else. Loosened to `[^:]+`.

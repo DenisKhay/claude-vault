@@ -10,8 +10,10 @@
 #   tails were the vault's dominant confirmed loss window (a real incident is
 #   permanently lost that way). Age-based re-arm bounds the un-swept window to
 #   the freshness interval.
-# PreCompact: NEVER blocks. If the vault is stale, it invalidates the actualize
-#   sentinel so the next Stop re-captures. Blocking compaction wedges sessions
+# PreCompact: NEVER blocks. It invalidates the actualize sentinel and logs the firing; it does NOT
+#   capture. 1.7.0 left it saying "the next Stop re-captures" while silencing that Stop, so on a 1M
+#   session (which never compacts anyway) this path captured nothing at all — the miner owns it now.
+#   Blocking compaction wedges sessions
 #   (a manual /compact dead-ends; auto-compact can't be user-retried), and the
 #   Stop path self-resolves cleanly while staying wedge-safe via stop_hook_active.
 # Pause: silent allow.
@@ -93,7 +95,7 @@ case "$HOOK_EVENT" in
       rm -f "$actualize_file" 2>/dev/null
       { mkdir -p "$log_dir" && printf '%s\t%s\tPreCompact\t%s\tsentinel-invalidated\tage=%s\n' \
           "$(date -Is)" "$HOOK_SESSION_ID" "$trig" "$age" >> "$log_dir/hook-events.log"; } 2>/dev/null
-      echo "Vault sync (pre-compact): vault stale — invalidated so the next stop re-captures. Compacting." >&2
+      echo "Vault sync (pre-compact): vault stale — the miner mines this transcript on its own schedule. Compacting." >&2
     else
       { mkdir -p "$log_dir" && printf '%s\t%s\tPreCompact\t%s\tno-sentinel\tage=-\n' \
           "$(date -Is)" "$HOOK_SESSION_ID" "$trig" >> "$log_dir/hook-events.log"; } 2>/dev/null

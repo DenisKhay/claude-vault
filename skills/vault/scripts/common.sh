@@ -93,6 +93,23 @@ spool_dir() {
   echo "${VAULT_SPOOL_DIR:-$HOME/.claude/vault-spool}"
 }
 
+# miner_alive
+# True when the miner daemon wrote a heartbeat recently AND its pid is still up. The hooks use this to
+# decide who owns launching workers: with a live miner they only write records (it polls them within one
+# interval); with no miner they fall back to 1.7.0's immediate launch, so a machine without the unit
+# still captures. Window is generous — a pass runs a worker synchronously and can take minutes.
+miner_alive() {
+  local f pid beat age
+  f="$(vault_state_dir)/miner.json"
+  [[ -f "$f" ]] || return 1
+  pid=$(jq -r '.pid // ""' "$f" 2>/dev/null)
+  beat=$(jq -r '.beat_at // ""' "$f" 2>/dev/null)
+  [[ -n "$pid" && -n "$beat" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  age=$(( $(date +%s) - $(date -d "$beat" +%s 2>/dev/null || echo 0) ))
+  (( age >= 0 && age < ${VAULT_MINER_STALE_SECONDS:-1800} ))
+}
+
 # is_spool_worker
 # Exits 0 inside a headless spool worker (spool-drain.sh sets VAULT_SPOOL_WORKER=1). A
 # worker mines a DEAD session's transcript; its own hooks must never spool it, re-prompt it

@@ -37,7 +37,10 @@ assert_eq "spooled" "$got" "C5: a session that never swept is always spooled"
 # --- C5: the listing never drops tails silently -------------------------------
 # Since 1.6.0 a record with drain attempts left belongs to auto-drain and is not listed;
 # the cap is exercised on records auto-drain gave up on (attempts exhausted).
-spool_dir="$HOME/.claude/vault-spool"
+# Isolated, NOT $HOME/.claude/vault-spool: writing fixtures into the real spool made this assertion
+# depend on how many sessions happen to be open (8 live records turned "and 3 more" into "and 8 more"),
+# and it littered the user's own crash insurance with listtest records.
+spool_dir="$(mktemp -d)/spool"
 mkdir -p "$spool_dir"
 tp="/tmp/vault-spool-listing-test.jsonl"; : > "$tp"
 for i in 1 2 3 4 5 6 7 8; do
@@ -45,7 +48,7 @@ for i in 1 2 3 4 5 6 7 8; do
      '{session_id:$sid, cwd:"/x", transcript_path:$tp, ended_at:"2026-08-30T00:00:00+03:00", drain_attempts:3}' \
      > "$spool_dir/zz-listtest-$i.json"
 done
-out=$(VAULT_ROOT="$(mktemp -d)" bash -c '
+out=$(VAULT_ROOT="$(mktemp -d)" VAULT_SPOOL_DIR="$spool_dir" bash -c '
   source "'"$spool_script_dir"'/common.sh" 2>/dev/null || true
   vroot="'"$(mktemp -d)"'"
   '"$(sed -n '/^extra_notices()/,/^}/p' "$spool_script_dir/inject-context.sh")"'
