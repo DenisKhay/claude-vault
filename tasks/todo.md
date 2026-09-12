@@ -203,3 +203,64 @@ subagent wall time, all landing at Stop. Not the price — a default.
 Trade-off accepted: the vault is current only after a session ends (worker lag), not while working.
 Not done (audit items still open): worker MCP/hook overhead (`--strict-mcp-config`), test-suite state
 isolation, headless `claude -p` capture guard.
+
+## 1.8.0 — the miner: live sessions get captured while they run (2026-09-12)
+
+1.7.0's accepted trade-off ("current only after a session ends") turned out to be unbounded: a pantheon
+seat runs for days, so its knowledge never reached the vault at all. Measured 2026-09-11/12 — 5 of 9
+live sessions had NEVER been swept (36.7 MB of transcript), and ARMIS-408's 20 hours of findings
+(a 15-service swagger sweep proving no endpoint changes a visit's time) appear in the vault zero times,
+under the key or under any wording of the finding.
+
+Cause, in order: **Stop** is silent by default (1.7.0); **PreCompact** never captured — it invalidates
+the sentinel "so the next Stop re-captures", and 1.7.0 silenced that Stop; and a 1M-context seat never
+compacts anyway (0 `compact_boundary` in an 11 MB and a 14 MB transcript). So **SessionEnd was the only
+live trigger**, and a seat that never ends never fires it. The stream of `ARMIS-xxxx:` captures on
+Sep 10 was the pinned 1.6.3 Stop nag, and it stopped the moment the fleet relaunched onto 1.7.0.
+
+**Why a daemon and not a hook trigger** (Denis, 2026-09-11): hook paths pin at session start, so a
+hook-side fix reaches a seat only when that seat restarts — days later, and that pinning IS what made
+capture depend on launch time. A unit changes behaviour for every session after one restart. Its own
+failure mode (not running) is made loud rather than silent: heartbeat + a SessionStart warning +
+`Restart=always`; transcripts are kept 180 days (`cleanupPeriodDays`), so a down miner defers, never loses.
+
+Thresholds are measured, not guessed: tails **≥32 KB produced nodes in 4 of 4 runs** (14 nodes, no
+failures); tails **<16 KB in 7 of 22** (10 no-delta, 5 failed). At 32 KB the fleet needs ~11 runs/day,
+and a run costs ~4.2 min / 29 K output / 2.6 M cache-read — **1–3%** of what the seats themselves burn.
+
+- [ ] **transcript-digest.py** — `--boundary-at-byte N`: emit a synthetic sweep boundary when the scan
+      crosses that offset (transcripts are append-only, so an offset is exact). The effective boundary
+      is the LATER of that and any in-transcript sweep, so a session's own `/vault-update` still counts.
+- [ ] **miner.sh** — the daemon. Every `VAULT_MINER_POLL_SECONDS` (60): write the heartbeat; re-exec if
+      a newer plugin version is installed (a release must not wait for a human restart); classify every
+      spool record (skip `is_paused`): live+alive → mine at `VAULT_MINER_LIVE_FLOOR_BYTES` (32768),
+      live+dead pid → crashed, ended → today's 4 KB floor; mine ONE candidate (largest tail first) under
+      a machine-wide `flock -n`; back off 5→60 min on API errors WITHOUT burning `drain_attempts`
+      (that counter is for mining failures, not a 403).
+- [ ] **miner state** — `<state>/miner.json`: heartbeat, running worker, per-session `mined_offset` +
+      last result. NOT in the spool record: `spool_write_record` rebuilds that JSON on every Stop and
+      keeps only `drain_attempts`, so a pinned old hook would wipe the marker and re-mine the tail.
+- [ ] **spool-drain.sh** — `--live`: worker prompt says the session is STILL RUNNING, mine only after
+      the last boundary, do NOT delete the record. Success is read by the SCRIPT from the worker's
+      existing final line, never from the record vanishing.
+- [ ] **spool-tail.sh** — SessionEnd stops launching a drain when a fresh miner heartbeat exists (the
+      daemon takes it within one poll); with no daemon it keeps today's immediate launch.
+- [ ] **inject-context.sh** — warn when the heartbeat is stale/missing; relaunch stale records only when
+      no daemon is alive; and fix line 260, which still claims "a capture sweep fires on Stop whenever
+      the last sweep is older than 30 minutes" — false since 1.7.0, and injected into every session.
+- [ ] **prompt-actualize.sh** — PreCompact drops the sentinel dance (it pointed at a Stop capture that
+      no longer exists); mining reads the transcript, which still holds the pre-compaction content.
+- [ ] **vault-miner.service + install-miner.sh** — user unit, `Restart=always`, `RestartSec=5`,
+      `WantedBy=default.target` (the pantheon-monitor pattern, 0 restarts since 2026-09-10), ExecStart
+      through a version-resolving wrapper.
+- [ ] **watch.sh** — OPTIONAL and read-only: sessions with tail-vs-threshold, last mine + result, the
+      running worker, heartbeat age, backoff/gave-up records. Closing the tab changes nothing.
+- [ ] tests `test_miner.sh` under `VAULT_STATE_DIR`/`VAULT_SPOOL_DIR`: classification, lock
+      serialization, marker survives an old-hook record rewrite, API backoff, crashed path, paused
+      skipped, heartbeat freshness, self-update re-exec.
+- [ ] bump 1.8.0, README + ARCHITECTURE, run suite, commit, push, reinstall, enable the unit.
+
+Not doing: no age rule for idle sub-threshold tails (the <16 KB data says they would mostly be empty
+runs); no whole-transcript re-mine (still the open measurement from 1.6.0's review above); no actions in
+the watch; no clip-limit change — assistant text is never clipped, only tool output is (measured: 441 KB
+of tool results cut on ARMIS-408, 0 assistant messages).
