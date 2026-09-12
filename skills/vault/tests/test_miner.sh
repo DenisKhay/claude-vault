@@ -137,6 +137,16 @@ miner_record echo-a "$t" false ""
 VAULT_FAKE_WORKER_OUTPUT='Finish with exactly one line: "spool-worker echo-a: <N> updated, <M> new (synced)"' miner_run
 assert_eq "null" "$(jq -r '.sessions["echo-a"] // "null"' "$miner_dir/state/miner.json")" "miner: a prompt echo is not parsed as a verdict"
 
+# --- a verdict from an EARLIER run is not this run's -------------------------------------------------
+miner_reset
+t="$miner_dir/t8.jsonl"; : > "$t"; miner_transcript "$t" 40 stale
+miner_record stale-a "$t" false ""
+mkdir -p "$miner_dir/state/spool-drain"
+printf '===== attempt 1 =====\nspool-worker stale-a: 9 updated, 9 new (synced)\n' > "$miner_dir/state/spool-drain/stale-a.log"
+PATH="$miner_dir/bin:$PATH" VAULT_STATE_DIR="$miner_dir/state" VAULT_SPOOL_DIR="$miner_dir/spool" \
+  VAULT_SPOOL_DRAIN_DRY_RUN=1 bash "$miner_scripts/miner.sh" --once >/dev/null 2>&1
+assert_eq "null" "$(jq -r '.sessions["stale-a"] // "null"' "$miner_dir/state/miner.json")" "miner: a verdict left by an earlier run never counts as this run's"
+
 # --- heartbeat + miner_alive ------------------------------------------------------------------------
 # run.sh runs under `set -e`, so a bare non-zero return — which is exactly what this asserts — would
 # abort the whole suite. Capture it in a condition instead.

@@ -91,12 +91,6 @@ self_update() {
   exec bash "${newest}skills/vault/scripts/miner.sh" "$@"
 }
 
-# An auth/quota refusal is not a mining failure: the tail is fine and the next attempt would fail the
-# same way. Back off instead of burning the record's attempts (the 403 that killed a worker on 09-08).
-is_api_error() {   # log file
-  grep -qiE 'API Error: (401|403|429)|usage limit|rate.?limit|Failed to authenticate|Request not allowed' "$1" 2>/dev/null
-}
-
 mine_one() {   # spool file, mode(live|ended), tail
   local f="$1" mode="$2" sid transcript snapshot prev log result
   sid=$(jq -r '.session_id // ""' "$f" 2>/dev/null)
@@ -106,6 +100,12 @@ mine_one() {   # spool file, mode(live|ended), tail
   prev=$(mined_offset "$sid")
   log="$state/spool-drain/$sid.log"
 
+  # The drain log is APPEND-ONLY across attempts, so "the last verdict in the file" can belong to a run
+  # that finished hours ago. Remember where the log ended before launching and read ONLY what this run
+  # appended — otherwise a pass that spawned nothing inherits an old success and advances the marker
+  # across a tail nobody mined (caught on the first dry run against real state, 2026-09-12).
+  local pre post slice
+  pre=$(stat -c %s "$log" 2>/dev/null || echo 0)
   write_state "$sid" "$mode"
   log_event "$sid" mine "mode=$mode tail=$3 from=$prev to=$snapshot"
   if [[ "$mode" == "live" ]]; then
@@ -115,11 +115,15 @@ mine_one() {   # spool file, mode(live|ended), tail
   fi
   write_state "" ""
 
-  # ANCHORED, and read from the end: the contract is "finish with exactly one line". Unanchored matching
-  # also hit that sentence inside the prompt itself — a dry run then recorded a fake success and advanced
-  # the marker past a tail nobody had mined. A worker that echoes its instructions would do the same.
-  result=$(tac "$log" 2>/dev/null | grep -m1 -E '^spool-worker [^:]+: ' | sed 's/^spool-worker [^:]*: //' | cut -c1-120)
-  if [[ -f "$log" ]] && is_api_error "$log"; then
+  # Only this run's output. A dry run truncates the log, so post <= pre and the slice is empty — which is
+  # the honest answer: nothing ran, nothing is proven, the marker stays.
+  post=$(stat -c %s "$log" 2>/dev/null || echo 0)
+  slice=""
+  (( post > pre )) && slice=$(tail -c "+$((pre + 1))" "$log" 2>/dev/null)
+  # ANCHORED: the prompt itself contains 'Finish with exactly one line: "spool-worker <sid>: …"', and an
+  # unanchored match reads that sentence as a verdict.
+  result=$(printf '%s' "$slice" | tac | grep -m1 -E '^spool-worker [^:]+: ' | sed 's/^spool-worker [^:]*: //' | cut -c1-120)
+  if printf '%s' "$slice" | grep -qiE 'API Error: (401|403|429)|usage limit|rate.?limit|Failed to authenticate|Request not allowed'; then
     backoff=$(( backoff == 0 ? backoff_min : backoff * 2 ))
     (( backoff > backoff_max )) && backoff=$backoff_max
     backoff_until=$(( $(date +%s) + backoff ))
