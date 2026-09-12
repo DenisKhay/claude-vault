@@ -30,6 +30,8 @@ source "$self_dir/common.sh"
 poll="${VAULT_MINER_POLL_SECONDS:-60}"
 live_floor="${VAULT_MINER_LIVE_FLOOR_BYTES:-32768}"
 dead_floor="${VAULT_SPOOL_DRAIN_MIN_TAIL_BYTES:-4096}"
+retry_after_s="${VAULT_MINER_RETRY_SECONDS:-1800}"
+max_attempts="${VAULT_SPOOL_DRAIN_MAX_ATTEMPTS:-3}"
 backoff_min="${VAULT_MINER_BACKOFF_MIN:-300}"
 backoff_max="${VAULT_MINER_BACKOFF_MAX:-3600}"
 
@@ -73,6 +75,24 @@ remember_mined() {   # sid, offset, result
 
 mined_offset() {   # sid
   jq -r --arg sid "$1" '.sessions[$sid].mined_offset // 0' "$miner_json" 2>/dev/null || echo 0
+}
+
+# A target that did not produce a verdict is put on ice. Without this the largest tail wins the pick on
+# EVERY pass, so one session that cannot be mined starves every other one — measured live on 2026-09-12:
+# ARMIS-408 (79 KB, drain attempts exhausted) was re-picked once a minute while four other sessions sat
+# over the floor untouched.
+cooling() {   # sid -> 0 when the session is still cooling down
+  local until
+  until=$(jq -r --arg sid "$1" '.sessions[$sid].retry_after // 0' "$miner_json" 2>/dev/null)
+  (( ${until:-0} > $(date +%s) ))
+}
+
+cool_down() {   # sid
+  local tmp
+  tmp=$(mktemp "$state/.miner.XXXXXX" 2>/dev/null) || return 0
+  jq --arg sid "$1" --argjson until "$(( $(date +%s) + retry_after_s ))" \
+     '.sessions[$sid] = ((.sessions[$sid] // {}) + {retry_after: $until})' "$miner_json" > "$tmp" 2>/dev/null \
+    && mv -f "$tmp" "$miner_json" 2>/dev/null || rm -f "$tmp" 2>/dev/null
 }
 
 # A newer installed version takes over in place: a vault release must not wait for a human to remember
@@ -139,12 +159,13 @@ mine_one() {   # spool file, mode(live|ended), tail
     remember_mined "$sid" "$snapshot" "$result"
     log_event "$sid" mined "$result"
   else
-    log_event "$sid" incomplete "${result:-no final line}"
+    cool_down "$sid"
+    log_event "$sid" incomplete "${result:-no final line} — cooling ${retry_after_s}s"
   fi
 }
 
 pass() {
-  local spool f sid cwd transcript live pid tail off best_f="" best_mode="" best_tail=0
+  local spool f sid cwd transcript live pid tail off attempts best_f="" best_mode="" best_tail=0
   spool="$(spool_dir)"
   [[ -d "$spool" ]] || return 0
   for f in "$spool"/*.json; do
@@ -156,6 +177,12 @@ pass() {
     pid=$(jq -r '.pid // ""' "$f" 2>/dev/null)
     [[ -n "$sid" ]] || continue
     is_paused "$sid" "$cwd" && continue
+    cooling "$sid" && continue
+    # The drain refuses an ENDED record once its attempts are spent ("left for a live session"), and
+    # under the miner no live session ever sweeps — so re-picking it is a guaranteed no-op. It stays
+    # visible in the SessionStart gave-up notice, which is where a human decides what to do with it.
+    attempts=$(jq -r '.drain_attempts // 0' "$f" 2>/dev/null)
+    [[ "$live" != "true" ]] && (( ${attempts:-0} >= max_attempts )) && continue
     # A record whose transcript is gone is the drain's to retire, not the miner's to measure.
     if [[ -z "$transcript" || ! -f "$transcript" ]]; then bash "$self_dir/spool-drain.sh" --run "$f"; continue; fi
 

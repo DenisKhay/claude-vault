@@ -100,7 +100,7 @@ sleep 0.2
 miner_record live-small "$t" true "$live_pid"
 miner_run
 assert_eq yes "$(_exists "$miner_dir/spool/live-small.json")" "miner: a live record under the floor is kept, not retired"
-assert_eq "null" "$(jq -r '.sessions["live-small"] // "null"' "$miner_dir/state/miner.json")" "miner: a sub-floor live session is not mined"
+assert_eq "null" "$(jq -r '.sessions["live-small"].mined_offset // "null"' "$miner_dir/state/miner.json")" "miner: a sub-floor live session is not mined"
 kill $live_pid 2>/dev/null || true
 
 # --- an ENDED session under the floor is retired (1.6.0 behaviour, unchanged) ---------------------
@@ -135,7 +135,7 @@ miner_reset
 t="$miner_dir/t7.jsonl"; : > "$t"; miner_transcript "$t" 40 echoed
 miner_record echo-a "$t" false ""
 VAULT_FAKE_WORKER_OUTPUT='Finish with exactly one line: "spool-worker echo-a: <N> updated, <M> new (synced)"' miner_run
-assert_eq "null" "$(jq -r '.sessions["echo-a"] // "null"' "$miner_dir/state/miner.json")" "miner: a prompt echo is not parsed as a verdict"
+assert_eq "null" "$(jq -r '.sessions["echo-a"].mined_offset // "null"' "$miner_dir/state/miner.json")" "miner: a prompt echo is not parsed as a verdict"
 
 # --- a verdict from an EARLIER run is not this run's -------------------------------------------------
 miner_reset
@@ -145,7 +145,29 @@ mkdir -p "$miner_dir/state/spool-drain"
 printf '===== attempt 1 =====\nspool-worker stale-a: 9 updated, 9 new (synced)\n' > "$miner_dir/state/spool-drain/stale-a.log"
 PATH="$miner_dir/bin:$PATH" VAULT_STATE_DIR="$miner_dir/state" VAULT_SPOOL_DIR="$miner_dir/spool" \
   VAULT_SPOOL_DRAIN_DRY_RUN=1 bash "$miner_scripts/miner.sh" --once >/dev/null 2>&1
-assert_eq "null" "$(jq -r '.sessions["stale-a"] // "null"' "$miner_dir/state/miner.json")" "miner: a verdict left by an earlier run never counts as this run's"
+assert_eq "null" "$(jq -r '.sessions["stale-a"].mined_offset // "null"' "$miner_dir/state/miner.json")" "miner: a verdict left by an earlier run never counts as this run's"
+
+# --- a retired record must not starve the others ----------------------------------------------------
+miner_reset
+big="$miner_dir/t9.jsonl"; : > "$big"; miner_transcript "$big" 80 retired
+small="$miner_dir/t10.jsonl"; : > "$small"; miner_transcript "$small" 40 fresh
+miner_record retired-a "$big" false ""
+jq '.drain_attempts = 3' "$miner_dir/spool/retired-a.json" > "$miner_dir/spool/retired-a.tmp" && mv "$miner_dir/spool/retired-a.tmp" "$miner_dir/spool/retired-a.json"
+miner_record fresh-a "$small" false ""
+miner_run
+assert_contains "fresh-a" "$(grep 'Miner	mine	' "$miner_dir/state/hook-events.log")" "miner: a record with attempts spent does not block the smaller one behind it"
+assert_not_contains "retired-a" "$(grep 'Miner	mine	' "$miner_dir/state/hook-events.log")" "miner: a retired record is never re-picked"
+
+# --- a run with no verdict cools down instead of looping ---------------------------------------------
+miner_reset
+t="$miner_dir/t11.jsonl"; : > "$t"; miner_transcript "$t" 40 silent
+miner_record silent-a "$t" false ""
+VAULT_FAKE_WORKER_OUTPUT="(no verdict line at all)" miner_run
+until_ts=$(jq -r '.sessions["silent-a"].retry_after // 0' "$miner_dir/state/miner.json")
+assert_eq yes "$( (( until_ts > $(date +%s) )) && echo yes || echo no )" "miner: a run with no verdict puts that session on ice"
+before=$(grep -c 'Miner	mine	' "$miner_dir/state/hook-events.log")
+miner_run
+assert_eq "$before" "$(grep -c 'Miner	mine	' "$miner_dir/state/hook-events.log")" "miner: a cooling session is skipped on the next pass"
 
 # --- heartbeat + miner_alive ------------------------------------------------------------------------
 # run.sh runs under `set -e`, so a bare non-zero return — which is exactly what this asserts — would

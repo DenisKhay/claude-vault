@@ -130,13 +130,14 @@ extra_notices() {
       if [[ "$(jq -r '.live // false' "$f" 2>/dev/null)" == "true" ]] && session_is_live "$(jq -r '.pid // ""' "$f" 2>/dev/null)"; then
         continue
       fi
-      # With the miner running it owns every launch; relaunching here would double-schedule.
-      miner_alive && { inflight=$(( inflight + 1 )); continue; }
       # Auto-drain owns a record until it has used up its attempts: a live worker, or a
       # young record whose worker has not reported yet, is in flight; a stale one without
       # a worker (SessionEnd's launch died with the host, or the worker crashed) is relaunched.
+      # With the miner running it owns every LAUNCH (relaunching here would double-schedule) — but the
+      # classification below still runs, or a spent record would be counted "in flight" forever and the
+      # gave-up notice, the only place a human sees a stuck tail, would never print again.
       if (( attempts < max_attempts )); then
-        if (( live == 0 )) && (( age >= retry_after )); then
+        if (( live == 0 )) && (( age >= retry_after )) && ! miner_alive; then
           bash "$self_dir/spool-drain.sh" --launch "$f"
           relaunched=$(( relaunched + 1 ))
         fi
