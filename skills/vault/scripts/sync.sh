@@ -122,7 +122,25 @@ if [[ -x "$self_dir/secret-scan.sh" || -f "$self_dir/secret-scan.sh" ]]; then
   fi
 fi
 
-# --- Stage (declared paths only; a bad pathspec is loud, never silent) ---------
+# --- Stage (declared paths, widened to their subgraph; never the whole vault) --
+# Declared-paths-only (fix 2, 2026-08-30) stopped a sweep from committing OTHER sessions' files, and in
+# doing so created the opposite leak: a node the agent wrote but did not name was staged by nobody, and
+# once that worker exited nothing ever committed it. Four care-space-assistant nodes sat uncommitted from
+# 2026-09-12 to 09-14 that way — on disk, absent from origin, reported as success everywhere. So widen
+# each declared path to its SUBGRAPH (nearest ancestor holding _index.md) and stage what is dirty there.
+# A different subgraph is still untouchable, which is the property fix 2 was protecting.
+STAGE_QUIET_S="${VAULT_SYNC_QUIET_SECONDS:-30}"
+
+subgraph_root() {   # path → nearest ancestor dir holding _index.md, or nothing
+  local d="$1"
+  [[ -d "$d" ]] || d="$(dirname "$d")"
+  while [[ -n "$d" && "$d" != "." && "$d" != "/" ]]; do
+    [[ -f "$d/_index.md" ]] && { printf '%s' "$d"; return 0; }
+    d="$(dirname "$d")"
+  done
+  return 1
+}
+
 if (( ${#PATHS[@]} )); then
   if ! add_err="$(git add -- "${PATHS[@]}" 2>&1)"; then
     echo "sync.sh: ⚠ REFUSING — a declared path did not match anything in $VROOT:"
@@ -130,6 +148,28 @@ if (( ${#PATHS[@]} )); then
     echo "sync.sh: nothing was committed; your files are untouched on disk."
     slog "REFUSED bad-pathspec"
     exit 2
+  fi
+  declare -A _roots=()
+  for _p in "${PATHS[@]}"; do
+    if _r="$(subgraph_root "$_p")"; then _roots["$_r"]=1; fi
+  done
+  _now=$(date +%s)
+  _widened=()
+  for _r in "${!_roots[@]}"; do
+    while IFS= read -r _f; do
+      [[ -n "$_f" ]] || continue
+      # A deletion is never swept in on someone else's behalf — removing knowledge is a deliberate act.
+      [[ -f "$_f" ]] || continue
+      # A file touched in the last few seconds belongs to a sweep still writing it; staging it here would
+      # commit half a node. It is not lost — the next sweep in that subgraph picks it up.
+      _m=$(stat -c %Y "$_f" 2>/dev/null || echo 0)
+      (( _now - _m < STAGE_QUIET_S )) && continue
+      _widened+=("$_f")
+    done < <( { git diff --name-only -- "$_r"; git ls-files --others --exclude-standard -- "$_r"; } | sort -u )
+  done
+  if (( ${#_widened[@]} )); then
+    git add -- "${_widened[@]}" 2>/dev/null
+    slog "WIDENED files=${#_widened[@]} subgraphs=${#_roots[@]}"
   fi
 else
   git add -A 2>/dev/null

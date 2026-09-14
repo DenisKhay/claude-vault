@@ -178,3 +178,28 @@ beat=$(jq -r '.beat_at // ""' "$miner_dir/state/miner.json")
 assert_eq yes "$( [[ -n "$beat" ]] && echo yes || echo no )" "miner: every pass writes a heartbeat"
 
 rm -rf "$miner_dir"
+
+# --- contention is not a failed mine ------------------------------------------------------------------
+# 2026-09-13: a SessionStart relaunch was already draining 97ab41e6 when the miner picked the same
+# session. spool-drain exited 0 having done nothing, the miner read an empty log slice as "no final
+# line", and iced the session for 1800s — eleven minutes before that very worker finished with
+# "6 updated, 1 new (synced)". A collision means someone else is doing the work, not that it failed.
+miner_reset
+t="$miner_dir/t12.jsonl"; : > "$t"; miner_transcript "$t" 40 contended
+miner_record contended-a "$t" false ""
+mkdir -p "$miner_dir/state/spool-drain"
+sleep 30 & holder=$!
+# run.sh runs under `set -e`: every job-control call below must swallow its own non-zero status.
+echo "$holder" > "$miner_dir/state/spool-drain/contended-a.pid"
+miner_run
+assert_contains "contended" "$(grep 'Miner	' "$miner_dir/state/hook-events.log")" "miner: a held tail is recorded as contended"
+until_ts=$(jq -r '.sessions["contended-a"].retry_after // 0' "$miner_dir/state/miner.json")
+assert_eq 0 "$until_ts" "miner: a contended session is NOT put on ice"
+marker=$(jq -r '.sessions["contended-a"].mined_at // "none"' "$miner_dir/state/miner.json")
+assert_eq none "$marker" "miner: contention never advances the mined marker"
+
+# The other worker finishes; the tail must still be pickable on the very next pass.
+kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+rm -f "$miner_dir/state/spool-drain/contended-a.pid"
+miner_run
+assert_contains "contended-a" "$(grep 'Miner	mined	' "$miner_dir/state/hook-events.log")" "miner: the tail is mined on the next pass once the holder is gone"

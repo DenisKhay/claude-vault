@@ -128,12 +128,21 @@ mine_one() {   # spool file, mode(live|ended), tail
   pre=$(stat -c %s "$log" 2>/dev/null || echo 0)
   write_state "$sid" "$mode"
   log_event "$sid" mine "mode=$mode tail=$3 from=$prev to=$snapshot"
+  local drain_rc=0
   if [[ "$mode" == "live" ]]; then
-    VAULT_DRAIN_LIVE=1 VAULT_DRAIN_BOUNDARY_BYTES="$prev" bash "$self_dir/spool-drain.sh" --run "$f"
+    VAULT_DRAIN_LIVE=1 VAULT_DRAIN_BOUNDARY_BYTES="$prev" bash "$self_dir/spool-drain.sh" --run "$f" || drain_rc=$?
   else
-    VAULT_DRAIN_BOUNDARY_BYTES="$prev" bash "$self_dir/spool-drain.sh" --run "$f"
+    VAULT_DRAIN_BOUNDARY_BYTES="$prev" bash "$self_dir/spool-drain.sh" --run "$f" || drain_rc=$?
   fi
   write_state "" ""
+
+  # 75 = another worker already owns this tail (a SessionStart relaunch, a hook drain). Nothing ran here,
+  # so there is nothing to score: leave the marker where it is and let the next pass look again. Cooling
+  # the session down would be actively wrong — the other worker is mining it as we speak.
+  if (( drain_rc == 75 )); then
+    log_event "$sid" contended "another worker holds this tail — re-checking next pass"
+    return 0
+  fi
 
   # Only this run's output. A dry run truncates the log, so post <= pre and the slice is empty — which is
   # the honest answer: nothing ran, nothing is proven, the marker stays.

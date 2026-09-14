@@ -102,7 +102,10 @@ fi
 pidfile="$state/$sid.pid"
 if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
   log_event already-running "pid=$(cat "$pidfile")"
-  exit 0
+  # 75 (EX_TEMPFAIL), not 0: another worker owns this tail right now. A caller that reads 0 as "the run
+  # finished and said nothing" scores a collision as a failed mine — which is what the miner did on
+  # 2026-09-13, icing a session whose worker went on to succeed eleven minutes later.
+  exit 75
 fi
 
 digest="$state/$sid.digest.md"

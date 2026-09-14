@@ -142,3 +142,50 @@ printf 'offline node\n' > "$tmp/A/sg/offline2.md"
 out=$(VAULT_ROOT="$tmp/A" bash "$SYNC" "offline with count" "sg/offline2.md" 2>&1) && ec=$? || ec=$?
 assert_contains "unpushed=1" "$out" "C13: an unreachable remote reports unpushed=1 (the robust signal)"
 rm -rf "$tmp"
+
+# --- C14: a node the sweep wrote but did not declare still gets committed ----------------------
+# The 2026-09-12 leak: sync staged only declared paths, so four nodes written by a worker that then
+# exited sat uncommitted for two days. Same subgraph as a declared path ⇒ it belongs to this sweep.
+tmp="$(mktemp -d)"
+_sync_fixture "$tmp"
+git -C "$tmp/A" reset -q --hard origin/main
+printf 'declared node\n' > "$tmp/A/sg/declared.md"
+printf 'undeclared sibling\n' > "$tmp/A/sg/undeclared.md"
+touch -d '-5 minutes' "$tmp/A/sg/declared.md" "$tmp/A/sg/undeclared.md"
+out=$(VAULT_ROOT="$tmp/A" bash "$SYNC" "widened sweep" "sg/declared.md" 2>&1) && ec=$? || ec=$?
+files=$(git -C "$tmp/A" show --name-only --format= HEAD | sort | tr '\n' ' ')
+assert_contains "sg/undeclared.md" "$files" "C14: the undeclared sibling is committed with the sweep"
+assert_contains "sg/declared.md" "$files" "C14: the declared node is committed too"
+rm -rf "$tmp"
+
+# --- C15: another subgraph's dirty file is still never swept in (fix 2 holds) ------------------
+tmp="$(mktemp -d)"
+_sync_fixture "$tmp"
+git -C "$tmp/A" reset -q --hard origin/main
+mkdir -p "$tmp/A/other"
+printf '# index\n' > "$tmp/A/other/_index.md"
+git -C "$tmp/A" add -A; git -C "$tmp/A" commit -qm "other subgraph"
+printf 'mine\n' > "$tmp/A/sg/mine.md"
+printf 'someone else is mid-sweep here\n' > "$tmp/A/other/theirs.md"
+touch -d '-5 minutes' "$tmp/A/sg/mine.md" "$tmp/A/other/theirs.md"
+out=$(VAULT_ROOT="$tmp/A" bash "$SYNC" "scoped sweep" "sg/mine.md" 2>&1) && ec=$? || ec=$?
+files=$(git -C "$tmp/A" show --name-only --format= HEAD | tr '\n' ' ')
+assert_contains "sg/mine.md" "$files" "C15: this subgraph's node is committed"
+case "$files" in *other/theirs.md*) got=SWEPT ;; *) got=untouched ;; esac
+assert_eq "untouched" "$got" "C15: another subgraph's dirty file is left alone"
+rm -rf "$tmp"
+
+# --- C16: a node another sweep is writing RIGHT NOW is not committed half-written --------------
+tmp="$(mktemp -d)"
+_sync_fixture "$tmp"
+git -C "$tmp/A" reset -q --hard origin/main
+printf 'declared\n' > "$tmp/A/sg/c16.md"
+touch -d '-5 minutes' "$tmp/A/sg/c16.md"
+printf 'being written this second\n' > "$tmp/A/sg/inflight.md"
+out=$(VAULT_ROOT="$tmp/A" bash "$SYNC" "quiet-window sweep" "sg/c16.md" 2>&1) && ec=$? || ec=$?
+files=$(git -C "$tmp/A" show --name-only --format= HEAD | tr '\n' ' ')
+case "$files" in *inflight.md*) got=SWEPT ;; *) got=deferred ;; esac
+assert_eq "deferred" "$got" "C16: a file touched seconds ago is left for the next sweep"
+[[ -f "$tmp/A/sg/inflight.md" ]] && got=present || got=GONE
+assert_eq "present" "$got" "C16: and it is still on disk, not lost"
+rm -rf "$tmp"
