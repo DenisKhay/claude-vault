@@ -48,7 +48,35 @@ PATHS=("$@")
 
 # Never hang a hook on a credential or host-key prompt.
 export GIT_TERMINAL_PROMPT=0
-export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -oBatchMode=yes -oConnectTimeout=10}"
+# BatchMode is right (never hang a hook on a passphrase prompt) but it makes an EMPTY agent fatal, and
+# the daemon's agent is routinely empty: a systemd user unit inherits SSH_AUTH_SOCK from whatever
+# started the session, and on this host that is gpg-agent's socket, which holds no identities — while
+# the human's terminal uses a different agent that holds the keys. Every daemon push then fails with
+# "Permission denied (publickey)" and is filed as OFFLINE, so commits pile up locally while the remote
+# is perfectly reachable (22 of them between 2026-09-15 15:20 and 09-16 14:18, unnoticed).
+# So: if the ambient agent can't offer an identity, fall back to a key file. Never override a caller's
+# GIT_SSH_COMMAND, and never override a working agent.
+if [[ -z "${GIT_SSH_COMMAND:-}" ]]; then
+  GIT_SSH_COMMAND="ssh -oBatchMode=yes -oConnectTimeout=10"
+  if ! ssh-add -l >/dev/null 2>&1; then
+    # Look for an agent that actually holds identities. A key FILE is not an option here: the only key
+    # authorized for this remote is passphrase-protected, and the passphrase-less ones on this host are
+    # either unregistered or scoped to a different repo — both verified 2026-09-16. The login keyring's
+    # agent is the one holding the unlocked key, and its path is stable, unlike the per-session symlinks
+    # that point at it. Only an agent that ANSWERS with at least one identity is accepted.
+    for _s in "${VAULT_SSH_AUTH_SOCK:-}" "$XDG_RUNTIME_DIR/keyring/ssh" "/run/user/$(id -u)/keyring/ssh"; do
+      [[ -n "$_s" && -S "$_s" ]] || continue
+      SSH_AUTH_SOCK="$_s" ssh-add -l >/dev/null 2>&1 || continue
+      export SSH_AUTH_SOCK="$_s"
+      break
+    done
+  fi
+  # A key file remains available for a host that has one; unset by default.
+  if ! ssh-add -l >/dev/null 2>&1 && [[ -n "${VAULT_SSH_KEY:-}" && -f "${VAULT_SSH_KEY}" ]]; then
+    GIT_SSH_COMMAND="ssh -i ${VAULT_SSH_KEY} -oIdentitiesOnly=yes -oBatchMode=yes -oConnectTimeout=10"
+  fi
+fi
+export GIT_SSH_COMMAND
 
 [[ -d "$VROOT/.git" ]] || { echo "sync.sh: $VROOT is not a git repo — nothing to sync"; exit 0; }
 command -v git >/dev/null 2>&1 || { echo "sync.sh: git not found"; exit 0; }
@@ -209,10 +237,21 @@ if ! git fetch --quiet origin "$branch" 2>/dev/null; then
   # A failed fetch is a dead network OR a bad credential — indistinguishable by
   # message (DNS failures also say "Permission denied"), so classify best-effort
   # and let unpushed=N be authoritative.
+  # "network/auth" as one bucket is what let this hide: a dead network is transient and retrying is
+  # right, while a rejected credential is permanent and retrying forever just grows the backlog. They
+  # are distinguishable — ask ssh itself, which answers without needing the repo.
   cls="network/auth"
-  if git ls-remote --exit-code origin >/dev/null 2>&1; then cls="fetch failed but remote is reachable"; fi
+  label="OFFLINE"
+  if git ls-remote --exit-code origin >/dev/null 2>&1; then
+    cls="fetch failed but remote is reachable"
+  elif [[ "$(git remote get-url origin 2>/dev/null)" == *@*:* ]] \
+    && ssh -o BatchMode=yes -o ConnectTimeout=10 -T "git@$(git remote get-url origin | sed 's/.*@//; s/:.*//')" 2>&1 \
+       | grep -qi 'permission denied'; then
+    cls="AUTH REJECTED — the agent offered no usable key (ssh-add -l), so this will NOT fix itself"
+    label="AUTH-DENIED"
+  fi
   echo "sync.sh: committed=$committed, remote unreachable ($cls) — local only, unpushed=$(unpushed), retries next sweep"
-  slog "OFFLINE committed=$committed unpushed=$(unpushed) $cls"
+  slog "$label committed=$committed unpushed=$(unpushed) $cls"
   exit 0
 fi
 

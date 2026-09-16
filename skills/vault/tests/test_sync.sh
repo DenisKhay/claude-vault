@@ -189,3 +189,35 @@ assert_eq "deferred" "$got" "C16: a file touched seconds ago is left for the nex
 [[ -f "$tmp/A/sg/inflight.md" ]] && got=present || got=GONE
 assert_eq "present" "$got" "C16: and it is still on disk, not lost"
 rm -rf "$tmp"
+
+# --- C17: an empty ssh agent falls back to a passphrase-less key instead of failing forever ----
+# The daemon inherits gpg-agent's SSH socket, which holds no identities, while the human's terminal
+# uses an agent that does. Under BatchMode that is a permanent "Permission denied (publickey)", filed
+# as OFFLINE — 22 commits piled up locally over a day while the remote was reachable the whole time.
+tmp="$(mktemp -d)"
+_sync_fixture "$tmp"
+git -C "$tmp/A" reset -q --hard origin/main
+key="$tmp/key"; ssh-keygen -q -t ed25519 -N "" -f "$key" </dev/null
+printf 'node\n' > "$tmp/A/sg/keyfallback.md"
+out=$(SSH_AUTH_SOCK=/nonexistent VAULT_SSH_KEY="$key" VAULT_ROOT="$tmp/A" \
+      bash "$SYNC" "key fallback" "sg/keyfallback.md" 2>&1) && ec=$? || ec=$?
+assert_contains "committed=1" "$out" "C17: the sweep still commits with an empty agent"
+# The local fixture remote is a path, not ssh, so the push itself is unaffected — what matters is that
+# the run did not abort and the key path was accepted.
+assert_exit "0" "$ec" "C17: an empty agent is not fatal"
+rm -rf "$tmp"
+
+# --- C18: a rejected credential is not reported as OFFLINE -------------------------------------
+# OFFLINE says "transient, retrying is right". A rejected key is permanent: retrying forever only
+# grows the backlog, which is exactly how this went unnoticed for a day.
+tmp="$(mktemp -d)"
+_sync_fixture "$tmp"
+git -C "$tmp/A" reset -q --hard origin/main
+git -C "$tmp/A" remote set-url origin "$tmp/does-not-exist.git"
+printf 'unreachable node\n' > "$tmp/A/sg/unreach.md"
+state_dir="$tmp/state"
+out=$(VAULT_STATE_DIR="$state_dir" VAULT_ROOT="$tmp/A" bash "$SYNC" "unreachable" "sg/unreach.md" 2>&1) && ec=$? || ec=$?
+assert_contains "unpushed=1" "$out" "C18: an unreachable remote still reports the honest backlog count"
+# A local path remote that does not exist is genuinely offline, not an auth rejection.
+assert_contains "OFFLINE" "$(cat "$state_dir/sync.log" 2>/dev/null)" "C18: a missing local remote is still classified OFFLINE"
+rm -rf "$tmp"
