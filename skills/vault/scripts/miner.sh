@@ -229,9 +229,23 @@ once=0
 [[ "${1:-}" == "--once" ]] && once=1
 
 log_event "" start "pid=$$ poll=${poll}s live_floor=${live_floor}B root=$self_dir"
+health_ok=""
+health_pass() {
+  local out ok
+  out=$(bash "$self_dir/vault-check.sh" --json 2>/dev/null) || true
+  [[ -n "$out" ]] || return 0
+  printf '%s\n' "$out" > "$state/health.json.tmp" 2>/dev/null && mv -f "$state/health.json.tmp" "$state/health.json" 2>/dev/null
+  ok=$(jq -r '.ok' <<<"$out" 2>/dev/null)
+  if [[ "$ok" != "$health_ok" ]]; then
+    if [[ "$ok" == "true" ]]; then log_event "" health "green"; else log_event "" health "RED: $(jq -r '.reds | join(" | ")' <<<"$out" 2>/dev/null | cut -c1-300)"; fi
+    health_ok="$ok"
+  fi
+}
+
 while :; do
   write_state "" ""
   self_update "$@"
+  health_pass
   if (( backoff_until <= $(date +%s) )); then pass; fi
   (( once )) && break
   sleep "$poll"

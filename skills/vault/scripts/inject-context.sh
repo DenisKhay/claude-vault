@@ -100,6 +100,10 @@ miner_notice() {
 
 extra_notices() {
   miner_notice
+  # The invariants that were violated silently in 2026-09-14..16 (nodes never committed, commits never
+  # pushed, plugin never deployed, miner up but not mining). Green prints nothing; a hook must never
+  # fail the session, so a broken check is swallowed rather than surfaced as a crash.
+  bash "$self_dir/vault-check.sh" 2>/dev/null || true
   if [[ -f "$vroot/.sync-diverged" ]]; then
     printf '\n⚠ VAULT SYNC DIVERGED: local and remote history do not fast-forward. Do NOT auto-merge — tell the user; resolve by hand (see the vault skill), then delete %s/.sync-diverged.\n' "$vroot"
   fi
