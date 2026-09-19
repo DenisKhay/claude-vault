@@ -137,3 +137,27 @@ rm -rf "$tmp"
 assert_contains "vault-check.sh" "$(cat "$SCRIPTS/inject-context.sh")" "wiring: inject-context runs the check"
 assert_contains "vault-check.sh" "$(cat "$SCRIPTS/miner.sh")" "wiring: the miner runs the check"
 assert_contains "|| true" "$(grep vault-check "$SCRIPTS/inject-context.sh")" "wiring: a broken check can never fail the session hook"
+
+# --- 6. the spool ceiling counts ENDED records, not live seats ---------------------------------
+# 2026-09-18: 25 records, 15 of them the 15 live seats. Counting every record would red a healthy
+# fleet — "a live session's record is not a backlog, it is a session".
+tmp="$(mktemp -d)"; _check_fixture "$tmp"
+t="$tmp/live.jsonl"; : > "$t"
+for i in $(seq 1 60); do
+  printf '{"session_id":"live-%s","cwd":"/x","transcript_path":"%s","live":true,"pid":"%s","drain_attempts":0}\n' "$i" "$t" "$$" > "$tmp/spool/live-$i.json"
+done
+out=$(_run_check "$tmp") && ec=$? || ec=$?
+assert_exit "0" "$ec" "check: 60 LIVE seats are not a backlog"
+assert_eq "" "$out" "check: and say nothing at all"
+rm -rf "$tmp"
+
+tmp="$(mktemp -d)"; _check_fixture "$tmp"
+t="$tmp/ended.jsonl"; : > "$t"
+# attempts spent, so the starvation rule skips them — this isolates the ceiling itself.
+for i in $(seq 1 41); do
+  printf '{"session_id":"dead-%s","cwd":"/x","transcript_path":"%s","live":false,"pid":"","drain_attempts":3}\n' "$i" "$t" > "$tmp/spool/dead-$i.json"
+done
+out=$(_run_check "$tmp") && ec=$? || ec=$?
+assert_exit "1" "$ec" "check: 41 ENDED records is over the ceiling and red"
+assert_contains "41 ENDED records" "$out" "check: the red counts only what is actually a backlog"
+rm -rf "$tmp"

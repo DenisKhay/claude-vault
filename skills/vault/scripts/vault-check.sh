@@ -27,7 +27,10 @@ now=$(date +%s)
 dirty_s="${VAULT_CHECK_DIRTY_SECONDS:-1800}"        # a sweep still writing is younger than this
 push_grace_s="${VAULT_CHECK_PUSH_GRACE_SECONDS:-120}" # a push right after a commit may still be in flight
 starved_s="${VAULT_CHECK_STARVED_SECONDS:-21600}"    # an ENDED tail unmined for 6h is a miner not mining
-spool_max="${VAULT_CHECK_SPOOL_MAX:-30}"
+# ENDED records only. Counting every record made this red at >30 on healthy state: 15 of the 25 on
+# 2026-09-18 were simply the 15 live seats, and a fleet that size is normal here. A live session's
+# record is not a backlog — it is a session. Only tails nobody is mining are.
+spool_max="${VAULT_CHECK_SPOOL_MAX:-40}"
 
 reds=()
 red() { reds+=("$1"); }
@@ -101,11 +104,11 @@ fi
 # unmined (its tail is below the floor); an ended one may not.
 if miner_alive && [[ -d "$spool" ]]; then
   max_attempts="${VAULT_SPOOL_DRAIN_MAX_ATTEMPTS:-3}"
-  starved=0; count=0
+  starved=0; ended=0
   for f in "$spool"/*.json; do
     [[ -e "$f" ]] || break
-    count=$(( count + 1 ))
     [[ "$(jq -r '.live // false' "$f" 2>/dev/null)" == "false" ]] || continue
+    ended=$(( ended + 1 ))
     (( $(jq -r '.drain_attempts // 0' "$f" 2>/dev/null) < max_attempts )) || continue
     sid=$(jq -r '.session_id // ""' "$f" 2>/dev/null)
     age=$(( now - $(stat -c %Y "$f" 2>/dev/null || echo "$now") ))
@@ -116,8 +119,8 @@ if miner_alive && [[ -d "$spool" ]]; then
   if (( starved > 0 )); then
     red "VAULT MINER is up but has not mined $starved ended session(s) older than $(( starved_s / 3600 ))h — read $state/hook-events.log (Miner rows) for why it keeps skipping them."
   fi
-  if (( count > spool_max )); then
-    red "VAULT SPOOL holds $count records (ceiling $spool_max) — the miner is falling behind or records are not being cleared."
+  if (( ended > spool_max )); then
+    red "VAULT SPOOL holds $ended ENDED records (ceiling $spool_max) — the miner is falling behind or records are not being cleared. Live seats are not counted."
   fi
 fi
 
